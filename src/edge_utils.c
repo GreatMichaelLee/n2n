@@ -1384,9 +1384,466 @@ static void send_unregister_super (n2n_edge_t *eee) {
 }
 
 
+/* ---------------------------------------------------------------------- *
+ * SN_SELECTION_STRATEGY_WEIGHT: probe scheduling, metric computation and
+ * hysteresis-based supernode switching.
+ *
+ * Composite metric (lower is better, unit is "equivalent milliseconds"):
+ *     metric = avg_rtt_ms + loss_rate * weight_loss + jitter_ms * (weight_jitter/1000)
+ * jitter uses an RFC3550-style EWMA of |consecutive rtt deltas| rather than a
+ * plain standard deviation, since it is order-sensitive: it distinguishes a
+ * one-off step change (which settles back to a low jitter contribution once
+ * stable, even if worse) from continuous flapping (which stays elevated).
+ *
+ * Probes always ride the transport the edge's data connection already uses:
+ * UDP mode reaches every configured supernode over the single unconnected
+ * eee->sock; TCP mode can only ever be connected to one peer at a time, so
+ * the current supernode is probed over eee->sock and every other configured
+ * supernode gets its own dedicated, independently (re)connecting TCP probe
+ * socket (peer->weight_state->probe_tcp_sock).
+ *
+ * Known limitation: the standalone TCP probe reader below does not attempt
+ * header decryption, so under HEADER_ENCRYPTION_ENABLED a standby supernode
+ * probed over TCP will never successfully parse its PROBE_ACKs (those probes
+ * always read as "lost", which just makes that candidate look worse than it
+ * is -- a conservative failure mode, not a correctness bug, but a real gap
+ * worth closing later if this is ever used with header encryption).
+ * ---------------------------------------------------------------------- */
+
+static sn_weight_state_t *sn_weight_ensure_state (n2n_edge_t *eee, peer_info_t *peer) {
+
+    if(!peer->weight_state) {
+        peer->weight_state = (sn_weight_state_t*)calloc(1, sizeof(sn_weight_state_t));
+        if(!peer->weight_state)
+            return NULL;
+
+        peer->weight_state->probe_tcp_sock = -1;
+        peer->weight_state->window_size = eee->conf.sn_probe_window;
+        if((peer->weight_state->window_size == 0)
+           || (peer->weight_state->window_size > (sizeof(peer->weight_state->samples) / sizeof(peer->weight_state->samples[0]))))
+            peer->weight_state->window_size = N2N_SN_PROBE_WINDOW_DEFAULT;
+    }
+
+    return peer->weight_state;
+}
+
+
+void sn_weight_state_free (peer_info_t *peer) {
+
+    if(!peer || !peer->weight_state)
+        return;
+
+    if(peer->weight_state->probe_tcp_sock >= 0)
+        closesocket(peer->weight_state->probe_tcp_sock);
+
+    free(peer->weight_state);
+    peer->weight_state = NULL;
+}
+
+
+/* push one completed (valid=1) or lost (valid=0) sample and update the RFC3550-style jitter */
+static void sn_weight_push_sample (sn_weight_state_t *ws, uint8_t valid, uint32_t rtt_usec) {
+
+    ws->samples[ws->next_slot].valid = valid;
+    ws->samples[ws->next_slot].rtt_usec = rtt_usec;
+    ws->next_slot = (uint16_t)((ws->next_slot + 1) % ws->window_size);
+    if(ws->sample_count < ws->window_size)
+        ws->sample_count++;
+
+    if(valid) {
+        if(ws->prev_rtt_valid) {
+            double d = (double)((int64_t)rtt_usec - (int64_t)ws->prev_rtt_usec);
+            if(d < 0)
+                d = -d;
+            ws->rfc3550_jitter += (d - ws->rfc3550_jitter) / 16.0;
+        }
+        ws->prev_rtt_usec = rtt_usec;
+        ws->prev_rtt_valid = 1;
+    }
+}
+
+
+/* recompute the composite metric (milliseconds) from the current ring buffer contents */
+static void sn_weight_recompute_metric (n2n_edge_t *eee, sn_weight_state_t *ws) {
+
+    uint16_t i, valid_n = 0, lost_n = 0;
+    uint64_t rtt_sum_usec = 0;
+    double avg_rtt_ms, loss_rate, jitter_ms;
+
+    if(ws->sample_count == 0) {
+        ws->metric = 1e9; /* no data yet: never preferred over a peer we actually have data for */
+        return;
+    }
+
+    for(i = 0; i < ws->sample_count; i++) {
+        if(ws->samples[i].valid) {
+            valid_n++;
+            rtt_sum_usec += ws->samples[i].rtt_usec;
+        } else {
+            lost_n++;
+        }
+    }
+
+    avg_rtt_ms = valid_n ? (((double)rtt_sum_usec / valid_n) / 1000.0) : 0.0;
+    loss_rate  = (double)lost_n / (double)ws->sample_count;
+    jitter_ms  = ws->rfc3550_jitter / 1000.0;
+
+    ws->metric = avg_rtt_ms
+               + loss_rate * (double)eee->conf.sn_weight_loss
+               + jitter_ms * ((double)eee->conf.sn_weight_jitter / 1000.0);
+}
+
+
+/* called whenever a PROBE_ACK is decoded, regardless of which transport it arrived over */
+static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, const n2n_SN_PROBE_t *ack) {
+
+    sn_weight_state_t *ws = peer->weight_state;
+    uint64_t now_us;
+    uint32_t rtt_usec;
+    n2n_sock_str_t sockbuf;
+
+    if(!ws || !ack->seq || (ack->seq != ws->outstanding_seq))
+        return; /* stale, duplicate, or unrelated ack: ignore */
+
+    now_us = time_stamp();
+    rtt_usec = (uint32_t)(now_us - ack->send_time);
+
+    sn_weight_push_sample(ws, 1, rtt_usec);
+    sn_weight_recompute_metric(eee, ws);
+    ws->outstanding_seq = 0;
+
+    traceEvent(TRACE_DEBUG, "SN_SELECTION_STRATEGY_WEIGHT: probe rtt=%uus for supernode [%s], metric now %.1fms",
+               rtt_usec, sock_to_cstr(sockbuf, &peer->sock), ws->metric);
+}
+
+
+/* open a non-blocking TCP connect() to a standby supernode, purely for probing. the
+ * connect is resolved synchronously here (bounded by a short internal select()) so the
+ * rest of the probe machinery never has to track a separate "still connecting" state --
+ * this deliberately trades a bounded, short stall of the whole edge loop (at most the
+ * timeout below, and only while a standby supernode is being (re)connected) for a much
+ * simpler and safer implementation. returns the connected fd, or -1 on failure. */
+static int sn_weight_open_probe_tcp (n2n_edge_t *eee, peer_info_t *peer) {
+
+    int sock_fd;
+    struct sockaddr_in sn_sock;
+
+    sock_fd = open_socket(0, eee->conf.bind_address, 1 /* TCP */);
+    if(sock_fd < 0)
+        return -1;
+
+#ifndef _WIN32
+    fcntl(sock_fd, F_SETFL, O_NONBLOCK);
+#else
+    { u_long value = 1; ioctlsocket(sock_fd, FIONBIO, &value); }
+#endif
+
+    fill_sockaddr((struct sockaddr*)&sn_sock, sizeof(sn_sock), &peer->sock);
+
+    if(connect(sock_fd, (struct sockaddr*)&sn_sock, sizeof(struct sockaddr)) < 0) {
+        if(errno != EINPROGRESS) {
+            closesocket(sock_fd);
+            return -1;
+        }
+
+        {
+            fd_set wfds;
+            struct timeval tv;
+            int so_err = 0;
+            socklen_t so_err_len = sizeof(so_err);
+
+            FD_ZERO(&wfds);
+            FD_SET(sock_fd, &wfds);
+            tv.tv_sec = 0;
+            tv.tv_usec = 800000; /* 800ms cap on the stall this introduces */
+
+            if(select(sock_fd + 1, NULL, &wfds, NULL, &tv) <= 0) {
+                closesocket(sock_fd);
+                return -1;
+            }
+
+            if((getsockopt(sock_fd, SOL_SOCKET, SO_ERROR, (void*)&so_err, &so_err_len) < 0) || so_err) {
+                closesocket(sock_fd);
+                return -1;
+            }
+        }
+    }
+
+    {
+        int one = 1;
+        setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, (void*)&one, sizeof(one));
+    }
+
+    return sock_fd;
+}
+
+
+/* minimal, self-contained TCP framing reader for a probe-only connection. deliberately
+ * does not call fetch_and_eventually_process_data()/process_udp(): those assume any TCP
+ * read failure means the *main* supernode connection died and react by tearing down
+ * eee->sock via supernode_disconnect() -- which would be wrong here, since this fd is an
+ * entirely separate, probe-only connection to a standby supernode. */
+static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer) {
+
+    sn_weight_state_t *ws = peer->weight_state;
+    ssize_t bread;
+    struct sockaddr_storage sas;
+    socklen_t ss_size = sizeof(sas);
+
+    if(!ws || (ws->probe_tcp_sock < 0))
+        return;
+
+    bread = recvfrom(ws->probe_tcp_sock, (void*)(ws->probe_tcp_buf + ws->probe_tcp_position),
+                     ws->probe_tcp_expected - ws->probe_tcp_position, 0,
+                     (struct sockaddr*)&sas, &ss_size);
+
+    if(bread <= 0) {
+        if((bread < 0) && ((errno == EAGAIN) || (errno == EWOULDBLOCK)))
+            return; /* spurious wakeup */
+
+        closesocket(ws->probe_tcp_sock);
+        ws->probe_tcp_sock = -1;
+        ws->probe_tcp_expected = sizeof(uint16_t);
+        ws->probe_tcp_position = 0;
+        return;
+    }
+
+    ws->probe_tcp_position = (uint16_t)(ws->probe_tcp_position + bread);
+
+    if(ws->probe_tcp_position != ws->probe_tcp_expected)
+        return; /* short read, wait for the rest */
+
+    if(ws->probe_tcp_position == sizeof(uint16_t)) {
+        uint16_t framelen = be16toh(*(uint16_t*)(ws->probe_tcp_buf));
+        ws->probe_tcp_expected = (uint16_t)(sizeof(uint16_t) + framelen);
+        if(ws->probe_tcp_expected > sizeof(ws->probe_tcp_buf)) {
+            closesocket(ws->probe_tcp_sock);
+            ws->probe_tcp_sock = -1;
+            ws->probe_tcp_expected = sizeof(uint16_t);
+            ws->probe_tcp_position = 0;
+        }
+        return;
+    }
+
+    /* full frame received: this connection never carries anything but a PROBE_ACK */
+    {
+        n2n_common_t cmn;
+        n2n_SN_PROBE_t ack;
+        size_t rem = ws->probe_tcp_position - sizeof(uint16_t);
+        size_t idx = 0;
+        uint8_t *base = ws->probe_tcp_buf + sizeof(uint16_t);
+
+        if((decode_common(&cmn, base, &rem, &idx) >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
+            decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
+            sn_weight_record_probe_ack(eee, peer, &ack);
+        }
+    }
+
+    ws->probe_tcp_expected = sizeof(uint16_t);
+    ws->probe_tcp_position = 0;
+}
+
+
+/* build and send one SN_PROBE to a given supernode over whichever transport applies */
+static void sn_weight_send_probe (n2n_edge_t *eee, peer_info_t *peer, sn_weight_state_t *ws,
+                                  uint8_t use_main_sock, uint64_t now_us) {
+
+    uint8_t pktbuf[N2N_PKT_BUF_SIZE];
+    size_t idx = 0;
+    n2n_common_t cmn = {0};
+    n2n_SN_PROBE_t probe = {0};
+
+    cmn.ttl = N2N_DEFAULT_TTL;
+    cmn.pc = MSG_TYPE_SN_PROBE;
+    cmn.flags = 0;
+    memcpy(cmn.community, eee->conf.community_name, N2N_COMMUNITY_SIZE);
+
+    ws->next_seq++;
+    if(ws->next_seq == 0)
+        ws->next_seq = 1; /* keep 0 reserved to mean "no probe outstanding" */
+
+    probe.seq = ws->next_seq;
+    probe.send_time = now_us;
+
+    encode_SN_PROBE(pktbuf, &idx, &cmn, &probe);
+
+    if(eee->conf.header_encryption == HEADER_ENCRYPTION_ENABLED) {
+        packet_header_encrypt(pktbuf, idx, idx,
+                              eee->conf.header_encryption_ctx_dynamic, eee->conf.header_iv_ctx_dynamic,
+                              time_stamp());
+    }
+
+    if(use_main_sock) {
+        sendto_sock(eee, pktbuf, idx, &peer->sock);
+    } else if(ws->probe_tcp_sock >= 0) {
+        uint16_t pktsize16 = htobe16((uint16_t)idx);
+
+        /* best-effort, non-blocking: a partial/failed write just means this probe gets
+         * counted as lost when it times out, same as if it had vanished on the wire */
+        if(send(ws->probe_tcp_sock, (const char*)&pktsize16, sizeof(pktsize16), 0) == (int)sizeof(pktsize16))
+            send(ws->probe_tcp_sock, (const char*)pktbuf, idx, 0);
+    } else {
+        return; /* no transport ready yet, skip this round silently */
+    }
+
+    ws->outstanding_seq = probe.seq;
+    ws->outstanding_send_time = now_us;
+}
+
+
+/* relative-threshold + consecutive-confirm hysteresis: a candidate must beat the current
+ * supernode's metric by at least --switch-threshold percent, and keep doing so for
+ * --switch-confirm consecutive evaluations, before we actually switch to it. */
+static void sn_weight_evaluate_switch (n2n_edge_t *eee, time_t now) {
+
+    peer_info_t *peer, *tmp, *best = NULL;
+    sn_weight_state_t *cur_ws;
+    double threshold_metric;
+
+    if(!eee->curr_sn || !eee->curr_sn->weight_state || !eee->curr_sn->weight_state->sample_count)
+        return; /* no data yet on the current supernode, nothing to compare against */
+
+    cur_ws = eee->curr_sn->weight_state;
+    threshold_metric = cur_ws->metric * (1.0 - ((double)eee->conf.sn_switch_threshold / 100.0));
+
+    HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
+        if((peer == eee->curr_sn) || !peer->weight_state || !peer->weight_state->sample_count)
+            continue;
+
+        if(peer->weight_state->metric < threshold_metric)
+            peer->weight_state->better_streak++;
+        else
+            peer->weight_state->better_streak = 0;
+
+        if((peer->weight_state->better_streak >= eee->conf.sn_switch_confirm)
+           && (!best || (peer->weight_state->metric < best->weight_state->metric)))
+            best = peer;
+    }
+
+    if(best) {
+        traceEvent(TRACE_NORMAL, "SN_SELECTION_STRATEGY_WEIGHT: switching supernode, metric %.1fms -> %.1fms after %u confirmations",
+                   cur_ws->metric, best->weight_state->metric, best->weight_state->better_streak);
+
+        send_unregister_super(eee);
+        eee->curr_sn = best;
+        reset_sup_attempts(eee);
+        supernode_connect(eee);
+
+        traceEvent(TRACE_INFO, "registering with supernode [%s][number of supernodes %d][attempts left %u]",
+                   supernode_ip(eee), HASH_COUNT(eee->conf.supernodes), (unsigned int)eee->sup_attempts);
+
+        send_register_super(eee);
+        eee->last_register_req = now;
+        eee->sn_wait = 1;
+
+        best->weight_state->better_streak = 0;
+        cur_ws->better_streak = 0; /* the peer we just left starts a fresh comparison window too */
+    }
+}
+
+
+/* main per-loop-iteration driver: paces probes, detects timeouts, manages standby TCP
+ * probe connection lifecycles, and periodically runs the switch-decision hysteresis. */
+static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
+
+    peer_info_t *peer, *tmp;
+    uint64_t now_us, probe_interval_us, timeout_us;
+
+    if(eee->conf.sn_selection_strategy != SN_SELECTION_STRATEGY_WEIGHT)
+        return;
+
+    now_us = time_stamp();
+    probe_interval_us = (uint64_t)eee->conf.sn_probe_interval * 1000ULL;
+    timeout_us = probe_interval_us * N2N_SN_PROBE_TIMEOUT_FACTOR;
+
+    HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
+        sn_weight_state_t *ws = sn_weight_ensure_state(eee, peer);
+        uint8_t use_main_sock;
+
+        if(!ws)
+            continue;
+
+        use_main_sock = (!eee->conf.connect_tcp) || (peer == eee->curr_sn);
+
+        if(!use_main_sock && (ws->probe_tcp_sock < 0)) {
+            if((now - ws->probe_tcp_last_attempt) < (N2N_SN_PROBE_RECONNECT_BACKOFF / 1000))
+                continue; /* backing off from a recent failed connect attempt */
+
+            ws->probe_tcp_last_attempt = now;
+            ws->probe_tcp_expected = sizeof(uint16_t);
+            ws->probe_tcp_position = 0;
+            ws->probe_tcp_sock = sn_weight_open_probe_tcp(eee, peer);
+
+            if(ws->probe_tcp_sock < 0) {
+                sn_weight_push_sample(ws, 0, 0);
+                sn_weight_recompute_metric(eee, ws);
+                continue;
+            }
+        }
+
+        /* an outstanding probe that never got answered counts as a lost sample */
+        if(ws->outstanding_seq && ((now_us - ws->outstanding_send_time) > timeout_us)) {
+            sn_weight_push_sample(ws, 0, 0);
+            sn_weight_recompute_metric(eee, ws);
+            ws->outstanding_seq = 0;
+        }
+
+        if(!ws->outstanding_seq && ((now_us - ws->outstanding_send_time) >= probe_interval_us))
+            sn_weight_send_probe(eee, peer, ws, use_main_sock, now_us);
+    }
+
+    if(((uint64_t)(now - eee->sn_weight_last_eval) * 1000ULL) >= eee->conf.sn_probe_interval) {
+        sn_weight_evaluate_switch(eee, now);
+        eee->sn_weight_last_eval = now;
+    }
+}
+
+
+/* select() integration for the dedicated standby TCP probe connections (UDP mode and the
+ * current supernode under TCP mode both ride eee->sock and need nothing extra here). */
+static void sn_weight_collect_read_fds (n2n_edge_t *eee, fd_set *socket_mask, int *max_sock) {
+
+    peer_info_t *peer, *tmp;
+
+    if((eee->conf.sn_selection_strategy != SN_SELECTION_STRATEGY_WEIGHT) || !eee->conf.connect_tcp)
+        return;
+
+    HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
+        if(peer->weight_state && (peer->weight_state->probe_tcp_sock >= 0)) {
+            FD_SET(peer->weight_state->probe_tcp_sock, socket_mask);
+            if(peer->weight_state->probe_tcp_sock > *max_sock)
+                *max_sock = peer->weight_state->probe_tcp_sock;
+        }
+    }
+}
+
+
+static void sn_weight_service_read_fds (n2n_edge_t *eee, fd_set *socket_mask) {
+
+    peer_info_t *peer, *tmp;
+
+    if((eee->conf.sn_selection_strategy != SN_SELECTION_STRATEGY_WEIGHT) || !eee->conf.connect_tcp)
+        return;
+
+    HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
+        if(peer->weight_state && (peer->weight_state->probe_tcp_sock >= 0)
+           && FD_ISSET(peer->weight_state->probe_tcp_sock, socket_mask))
+            sn_weight_service_probe_tcp_read(eee, peer);
+    }
+}
+
+
 static int sort_supernodes (n2n_edge_t *eee, time_t now) {
 
     struct peer_info *scan, *tmp;
+
+    if(eee->conf.sn_selection_strategy == SN_SELECTION_STRATEGY_WEIGHT) {
+        /* SN_SELECTION_STRATEGY_WEIGHT replaces this function's sort-and-switch-on-reorder
+         * behaviour (and the legacy PING it sends below) entirely with sn_weight_tick()'s
+         * own probing and relative-threshold + consecutive-confirm hysteresis, called from
+         * run_edge_loop() alongside this function. Nothing to do here for this strategy. */
+        return 0;
+    }
 
     if(now - eee->last_sweep > SWEEP_TIME) {
         // this routine gets periodically called
@@ -2735,6 +3192,29 @@ void process_udp (n2n_edge_t *eee, const struct sockaddr *sender_sock, const SOC
                 break;
             }
 
+            case MSG_TYPE_SN_PROBE_ACK: {
+                /* reply to an SN_SELECTION_STRATEGY_WEIGHT probe sent over the main
+                 * socket -- i.e. either UDP mode (any configured supernode) or TCP mode's
+                 * currently-connected supernode. probes sent over a standby TCP probe-only
+                 * connection are handled separately in sn_weight_service_probe_tcp_read(),
+                 * which never goes through this dispatcher. */
+                n2n_SN_PROBE_t ack;
+
+                decode_SN_PROBE(&ack, &cmn, udp_buf, &rem, &idx);
+
+                if(eee->conf.header_encryption == HEADER_ENCRYPTION_ENABLED) {
+                    if(!find_peer_time_stamp_and_verify(eee, sn, null_mac, stamp, TIME_STAMP_ALLOW_JITTER)) {
+                        traceEvent(TRACE_DEBUG, "dropped SN_PROBE_ACK due to time stamp error");
+                        return;
+                    }
+                }
+
+                if(sn)
+                    sn_weight_record_probe_ack(eee, sn, &ack);
+
+                break;
+            }
+
             case MSG_TYPE_RE_REGISTER_SUPER: {
 
                 if(eee->conf.header_encryption == HEADER_ENCRYPTION_ENABLED) {
@@ -2933,8 +3413,21 @@ int run_edge_loop (n2n_edge_t *eee) {
         max_sock = max(max_sock, eee->device.fd);
 #endif
 
-        wait_time.tv_sec = (eee->sn_wait) ? (SOCKET_TIMEOUT_INTERVAL_SECS / 10 + 1) : (SOCKET_TIMEOUT_INTERVAL_SECS);
-        wait_time.tv_usec = 0;
+        sn_weight_collect_read_fds(eee, &socket_mask, &max_sock);
+
+        if(eee->conf.sn_selection_strategy == SN_SELECTION_STRATEGY_WEIGHT) {
+            /* SN_SELECTION_STRATEGY_WEIGHT paces probes on the order of sn_probe_interval
+             * (default 2s), far tighter than the 10s this loop otherwise idles for -- cap
+             * the wait so sn_weight_tick() below gets to run promptly and often enough. */
+            uint32_t weight_wait_ms = eee->conf.sn_probe_interval / 4;
+            if(weight_wait_ms < 200)
+                weight_wait_ms = 200;
+            wait_time.tv_sec = weight_wait_ms / 1000;
+            wait_time.tv_usec = (weight_wait_ms % 1000) * 1000;
+        } else {
+            wait_time.tv_sec = (eee->sn_wait) ? (SOCKET_TIMEOUT_INTERVAL_SECS / 10 + 1) : (SOCKET_TIMEOUT_INTERVAL_SECS);
+            wait_time.tv_usec = 0;
+        }
         rc = select(max_sock + 1, &socket_mask, NULL, NULL, &wait_time);
         now = time(NULL);
 
@@ -2994,6 +3487,8 @@ int run_edge_loop (n2n_edge_t *eee) {
                 edge_read_from_tap(eee);
             }
 #endif
+
+            sn_weight_service_read_fds(eee, &socket_mask);
         }
 
         // finished processing select data
@@ -3044,6 +3539,7 @@ int run_edge_loop (n2n_edge_t *eee) {
         }
 
         sort_supernodes(eee, now);
+        sn_weight_tick(eee, now);
 
         eee->resolution_request = resolve_check(eee->resolve_parameter, eee->resolution_request, now);
 
@@ -3202,6 +3698,13 @@ void edge_init_conf_defaults (n2n_edge_conf_t *conf) {
 
     conf->sn_selection_strategy = SN_SELECTION_STRATEGY_LOAD;
     conf->metric = 0;
+
+    conf->sn_probe_interval   = N2N_SN_PROBE_INTERVAL_DEFAULT;
+    conf->sn_probe_window     = N2N_SN_PROBE_WINDOW_DEFAULT;
+    conf->sn_weight_loss      = N2N_SN_WEIGHT_LOSS_DEFAULT;
+    conf->sn_weight_jitter    = N2N_SN_WEIGHT_JITTER_DEFAULT;
+    conf->sn_switch_threshold = N2N_SN_SWITCH_THRESHOLD_DEFAULT;
+    conf->sn_switch_confirm   = N2N_SN_SWITCH_CONFIRM_DEFAULT;
 }
 
 /* ************************************** */

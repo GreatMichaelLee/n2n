@@ -210,6 +210,7 @@ static void help (int level) {
                "[-e <preferred local IP address>] [-S<level of solitude>]"
             "\n                      "
                "[--select-rtt] "
+               "[--select-weight] "
 #if defined(HAVE_MINIUPNP) || defined(HAVE_NATPMP)
                "[--no-port-forwarding] "
 #endif // HAVE_MINIUPNP || HAVE_NATPMP
@@ -265,6 +266,10 @@ static void help (int level) {
           "\n                      [-E]  accept multicast MAC addresses"
           "\n            [--select-rtt]  select supernode by round trip time"
           "\n            [--select-mac]  select supernode by MAC address"
+          "\n         [--select-weight]  select supernode by a composite rtt+loss+jitter"
+          "\n                            metric, with hysteresis (see --probe-interval,"
+          "\n                            --probe-window, --weight-loss, --weight-jitter,"
+          "\n                            --switch-threshold, --switch-confirm below)"
 #ifndef _WIN32
           "\n                      [-f]  do not fork but run in foreground"
 #endif
@@ -327,6 +332,22 @@ static void help (int level) {
         printf("--select-rtt       | supernode selection based on round trip time\n"
                "--select-mac       | supernode selection based on MAC address (default:\n"
                "                   | by load)\n");
+        printf("--select-weight    | supernode selection based on a composite rtt+loss+jitter\n"
+               "                   | metric with hysteresis, switching only once a candidate\n"
+               "                   | stays ahead by --switch-threshold for --switch-confirm\n"
+               "                   | consecutive probe windows\n");
+        printf("--probe-interval   | --select-weight: ms between probes to each known\n"
+               " <ms>              | supernode, defaults to %u\n", N2N_SN_PROBE_INTERVAL_DEFAULT);
+        printf("--probe-window     | --select-weight: number of probe samples kept per\n"
+               " <n>               | supernode (1-64), defaults to %u\n", N2N_SN_PROBE_WINDOW_DEFAULT);
+        printf("--weight-loss <ms> | --select-weight: metric penalty in ms at 100%% probe\n"
+               "                   | loss, defaults to %u\n", N2N_SN_WEIGHT_LOSS_DEFAULT);
+        printf("--weight-jitter    | --select-weight: jitter weight in milli-units\n"
+               " <milli-units>     | (1000 = coefficient 1.0), defaults to %u\n", N2N_SN_WEIGHT_JITTER_DEFAULT);
+        printf("--switch-threshold | --select-weight: percent a candidate's metric must beat\n"
+               " <percent>         | the current supernode's by, defaults to %u\n", N2N_SN_SWITCH_THRESHOLD_DEFAULT);
+        printf("--switch-confirm   | --select-weight: consecutive probe windows a candidate\n"
+               " <n>               | must stay ahead before switching, defaults to %u\n", N2N_SN_SWITCH_CONFIRM_DEFAULT);
         printf ("\n");
         printf (" TAP DEVICE AND OVERLAY NETWORK CONFIGURATION\n");
         printf (" --------------------------------------------\n\n");
@@ -754,6 +775,60 @@ static int setOption (int optkey, char *optargument, n2n_tuntap_priv_config_t *e
             break;
         }
 
+        case '}': /* weighted (rtt+loss+jitter) supernode selection strategy */ {
+            // overwrites the default load-based strategy
+            conf->sn_selection_strategy = SN_SELECTION_STRATEGY_WEIGHT;
+
+            break;
+        }
+
+        case '~': /* --probe-interval, ms between SN_SELECTION_STRATEGY_WEIGHT probes */ {
+            conf->sn_probe_interval = (uint32_t)atoi(optargument);
+            if(conf->sn_probe_interval == 0)
+                conf->sn_probe_interval = N2N_SN_PROBE_INTERVAL_DEFAULT;
+
+            break;
+        }
+
+        case '!': /* --probe-window, number of probe samples kept per supernode */ {
+            int window = atoi(optargument);
+            if((window <= 0) || (window > 64))
+                window = N2N_SN_PROBE_WINDOW_DEFAULT;
+            conf->sn_probe_window = (uint16_t)window;
+
+            break;
+        }
+
+        case '#': /* --weight-loss, ms penalty at 100% probe loss */ {
+            conf->sn_weight_loss = (uint32_t)atoi(optargument);
+
+            break;
+        }
+
+        case '$': /* --weight-jitter, jitter weight in milli-units (1000 == coefficient 1.0) */ {
+            conf->sn_weight_jitter = (uint32_t)atoi(optargument);
+
+            break;
+        }
+
+        case '%': /* --switch-threshold, percent a candidate must beat the current supernode by */ {
+            int threshold = atoi(optargument);
+            if((threshold < 0) || (threshold > 100))
+                threshold = N2N_SN_SWITCH_THRESHOLD_DEFAULT;
+            conf->sn_switch_threshold = (uint16_t)threshold;
+
+            break;
+        }
+
+        case '^': /* --switch-confirm, consecutive probe windows a candidate must stay ahead */ {
+            int confirm = atoi(optargument);
+            if(confirm <= 0)
+                confirm = N2N_SN_SWITCH_CONFIRM_DEFAULT;
+            conf->sn_switch_confirm = (uint16_t)confirm;
+
+            break;
+        }
+
         case 'h': /* quick reference */ {
             return 2;
         }
@@ -815,6 +890,13 @@ static const struct option long_options[] =
         { "select-rtt",          no_argument,       NULL, '[' }, /*                            '['             rtt selection strategy */
         { "select-mac",          no_argument,       NULL, ']' }, /*                            ']'             mac selection strategy */
         { "management-password", required_argument, NULL, '{' }, /*                            '{'             management port password */
+        { "select-weight",       no_argument,       NULL, '}' }, /*                            '}'             weighted (rtt+loss+jitter) selection strategy */
+        { "probe-interval",      required_argument, NULL, '~' }, /*                            '~'             weighted strategy: ms between probes */
+        { "probe-window",        required_argument, NULL, '!' }, /*                            '!'             weighted strategy: probe samples kept per supernode */
+        { "weight-loss",         required_argument, NULL, '#' }, /*                            '#'             weighted strategy: ms penalty at 100% loss */
+        { "weight-jitter",       required_argument, NULL, '$' }, /*                            '$'             weighted strategy: jitter weight, milli-units */
+        { "switch-threshold",    required_argument, NULL, '%' }, /*                            '%'             weighted strategy: percent improvement required to switch */
+        { "switch-confirm",      required_argument, NULL, '^' }, /*                            '^'             weighted strategy: consecutive confirmations required to switch */
         { NULL,                  0,                 NULL,  0  }
     };
 

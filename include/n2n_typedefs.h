@@ -298,6 +298,41 @@ typedef char n2n_version_t[N2N_VERSION_STRING_SIZE];
 #define SN_SELECTION_STRATEGY_LOAD       1
 #define SN_SELECTION_STRATEGY_RTT        2
 #define SN_SELECTION_STRATEGY_MAC        3
+#define SN_SELECTION_STRATEGY_WEIGHT     4
+
+
+/* one sample of a supernode probe round trip, kept in a per-supernode ring buffer */
+typedef struct sn_probe_sample {
+    uint8_t         valid;         /* 0 = lost/timed out, 1 = rtt_usec holds a real measurement */
+    uint32_t        rtt_usec;
+} sn_probe_sample_t;
+
+/* SN_SELECTION_STRATEGY_WEIGHT bookkeeping kept per known supernode (embedded in peer_info_t) */
+typedef struct sn_weight_state {
+    sn_probe_sample_t samples[64];      /* ring buffer, sized to the largest allowed --probe-window */
+    uint16_t        window_size;        /* configured window size actually in use, <= 64 */
+    uint16_t        sample_count;       /* number of valid slots filled so far (caps at window_size) */
+    uint16_t        next_slot;          /* next ring buffer index to write */
+    uint32_t        next_seq;           /* next probe sequence number to send */
+    uint32_t        outstanding_seq;    /* seq of the probe currently awaiting a reply, 0 if none in flight */
+    uint64_t        outstanding_send_time; /* microsecond send_time of the outstanding probe */
+    double          rfc3550_jitter;     /* running RFC3550-style jitter estimate, in microseconds */
+    uint32_t        prev_rtt_usec;      /* previous completed sample's rtt, for jitter delta calc */
+    uint8_t         prev_rtt_valid;     /* whether prev_rtt_usec holds a real value yet */
+    double          metric;             /* last computed composite metric, in milliseconds */
+    uint16_t        better_streak;      /* consecutive probe windows this peer beat the current supernode by switch-threshold */
+    /* TCP-only probe transport (used when the edge's data connection is TCP, see conf.connect_tcp).
+     * connect() for this socket is resolved synchronously (bounded by a short internal select())
+     * inside sn_weight_open_probe_tcp() at the moment it is opened, so by the time probe_tcp_sock
+     * is non-negative here it is already either connected or closed again -- there is no separate
+     * "still connecting" state to track between main-loop iterations. */
+    int             probe_tcp_sock;     /* -1 when not connected; independent from the edge's main data socket */
+    time_t          probe_tcp_last_attempt; /* last time we tried to (re)connect probe_tcp_sock, for backoff */
+    uint16_t        probe_tcp_expected; /* fetch_and_eventually_process_data()'s framing state, kept per-connection */
+    uint16_t        probe_tcp_position;
+    uint8_t         probe_tcp_buf[N2N_PKT_BUF_SIZE + sizeof(uint16_t)]; /* sized like run_edge_loop()'s own pktbuf: the
+                                          * shared TCP-framing reader trusts this capacity up to N2N_PKT_BUF_SIZE */
+} sn_weight_state_t;
 
 
 typedef struct n2n_ip_subnet {
@@ -446,6 +481,14 @@ typedef struct n2n_QUERY_PEER {
 
 } n2n_QUERY_PEER_t;
 
+
+/* used for both MSG_TYPE_SN_PROBE and MSG_TYPE_SN_PROBE_ACK: the receiver of a PROBE
+ * echoes seq/send_time back verbatim in a PROBE_ACK, so the struct is shared. */
+typedef struct n2n_SN_PROBE {
+    uint32_t                      seq;
+    uint64_t                      send_time;      /* originator's local microsecond timestamp */
+} n2n_SN_PROBE_t;
+
 typedef struct n2n_buf n2n_buf_t;
 
 struct peer_info {
@@ -468,6 +511,7 @@ struct peer_info {
     uint8_t                          local;
     time_t                           uptime;
     n2n_version_t                    version;
+    sn_weight_state_t                *weight_state; /* lazily allocated, only used for supernode entries under SN_SELECTION_STRATEGY_WEIGHT */
 
     UT_hash_handle     hh; /* makes this structure hashable */
 };
@@ -690,6 +734,14 @@ typedef struct n2n_edge_conf {
     uint8_t                  sn_selection_strategy; /**< encodes currently chosen supernode selection strategy. */
     uint8_t                  number_max_sn_pings;   /**< Number of maximum concurrently allowed supernode pings. */
     uint64_t                 mgmt_password_hash;    /**< contains hash of managament port password. */
+
+    /* SN_SELECTION_STRATEGY_WEIGHT tunables, all settable via CLI, defaulted in edge_init_conf_defaults() */
+    uint32_t                 sn_probe_interval;      /**< ms between probes sent to each known supernode. */
+    uint16_t                 sn_probe_window;        /**< number of probe samples kept per supernode, <=64. */
+    uint32_t                 sn_weight_loss;         /**< ms penalty applied at 100% loss rate. */
+    uint32_t                 sn_weight_jitter;       /**< jitter weight in milli-units, 1000 == coefficient 1.0. */
+    uint16_t                 sn_switch_threshold;    /**< percent: candidate must beat current by at least this much. */
+    uint16_t                 sn_switch_confirm;      /**< consecutive probe windows candidate must stay ahead before switching. */
 } n2n_edge_conf_t;
 
 
@@ -745,6 +797,7 @@ struct n2n_edge {
     time_t                           last_sup;                           /**< Last time a packet arrived from supernode. */
     time_t                           last_sweep;                         /**< Last time a sweep was performed. */
     time_t                           start_time;                         /**< For calculating uptime */
+    time_t                           sn_weight_last_eval;                /**< SN_SELECTION_STRATEGY_WEIGHT: last time the switch-decision hysteresis was evaluated. */
 
 
     struct n2n_edge_stats            stats;                              /**< Statistics */
