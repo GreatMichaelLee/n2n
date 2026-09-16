@@ -1,0 +1,64 @@
+*.o
+*.a
+*.gz
+*.exe
+configure
+config.log
+config.mak
+config.rpath
+config.status
+include/config.h
+include/config.h.in
+autom4te.cache
+edge
+example_edge_embed_quick_edge_init
+example_edge_embed
+example_sn_embed
+supernode
+tools/n2n-benchmark
+tools/n2n-decode
+tools/n2n-keygen
+tools/n2n-portfwd
+tools/n2n-route
+build
+.idea
+.vscode
+.vs
+packages/debian/debian/files
+*dSYM*
+
+__pycache__
+
+# Binaries built to run tests
+tools/tests-auth
+tools/tests-compress
+tools/tests-elliptic
+tools/tests-hashing
+tools/tests-transform
+tools/tests-wire
+
+# Files generated while running tests
+tests/*.out
+
+# Files generated while running coverage reports
+*.gcno
+*.gcda
+*.gcov
+coverage/
+
+# Files generated while running linting
+*.indent
+*.unc-backup.md5~
+*.unc-backup~
+
+# Empty files created by the openwrt build
+/.built
+/.built_check
+/.configured_*
+/.prepared
+/.quilt_checked
+/.source_dir
+/ABOUT-NLS
+/AUTHORS
+/ChangeLog
+/NEWS

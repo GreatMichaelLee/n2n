@@ -1,0 +1,17 @@
+# Global configuration, included in top Makefile and exported from there.
+# @configure_input@
+
+CONFIG_HOST=@host@
+CONFIG_HOST_OS=@host_os@
+CONFIG_PREFIX=@prefix@
+
+PACKAGE_VERSION=@PACKAGE_VERSION@
+
+CC=@CC@
+AR=@AR@
+WINDRES=@WINDRES@
+EXE=@EXE@
+
+CFLAGS=@CFLAGS@
+LDFLAGS=@LDFLAGS@
+LDLIBS_EXTRA=@LIBS@
