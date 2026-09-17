@@ -1007,6 +1007,10 @@ static void check_known_peer_sock_change (n2n_edge_t *eee,
     if(!sock_equal(&(scan->sock), peer)) {
         if(!from_supernode) {
             /* This is a P2P packet */
+            n2n_ip_subnet_t old_dev_addr = scan->dev_addr;
+            n2n_desc_t old_dev_desc;
+            memcpy(old_dev_desc, scan->dev_desc, N2N_DESC_SIZE);
+
             traceEvent(TRACE_NORMAL, "peer %s changed [%s] -> [%s]",
                        macaddr_str(mac_buf, scan->mac_addr),
                        sock_to_cstr(sockbuf1, &(scan->sock)),
@@ -1016,7 +1020,14 @@ static void check_known_peer_sock_change (n2n_edge_t *eee,
             mgmt_event_post(N2N_EVENT_PEER,N2N_EVENT_PEER_DEL_P2P,scan);
             free(scan);
 
-            register_with_new_peer(eee, from_supernode, via_multicast, mac, dev_addr, dev_desc, peer);
+            /* This fires off bare P2P PACKET traffic (dev_addr/dev_desc are NULL --
+             * only REGISTER carries them), so falling back to what we already knew
+             * about this MAC keeps the TAP/HINT columns populated across the
+             * reconnect instead of blanking them until the next REGISTER round-trip. */
+            register_with_new_peer(eee, from_supernode, via_multicast, mac,
+                                   dev_addr ? dev_addr : &old_dev_addr,
+                                   dev_desc ? dev_desc : &old_dev_desc,
+                                   peer);
         } else {
             /* Don't worry about what the supernode reports, it could be seeing a different socket. */
         }
