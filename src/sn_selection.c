@@ -238,14 +238,21 @@ extern char * sn_selection_criterion_str (n2n_edge_t *eee, selection_criterion_s
         /* kept compact on purpose: SN_SELECTION_CRITERION_BUF_SIZE is only 16 bytes,
          * matching the "rtt = %6ld ms" / "load = %8ld" convention used by the other
          * strategies above -- detailed metric breakdown isn't a good fit for this field. */
-        if(peer->weight_state && peer->weight_state->sample_count) {
+        if(!peer->weight_state || !peer->weight_state->sample_count) {
+            chars = snprintf(out, SN_SELECTION_CRITERION_BUF_SIZE, "%c no data",
+                             (peer == eee->curr_sn) ? 'A' : 'S');
+        } else if(!peer->weight_state->valid_samples) {
+            /* every sample in the window timed out: metric is just the flat loss
+             * penalty with no real RTT in it, not a genuine (if large) latency --
+             * showing it as if it were "1000.0ms" would be indistinguishable from
+             * a real, working connection that just happens to be that slow. */
+            chars = snprintf(out, SN_SELECTION_CRITERION_BUF_SIZE, "%c        -",
+                             (peer == eee->curr_sn) ? 'A' : 'S');
+        } else {
             chars = snprintf(out, SN_SELECTION_CRITERION_BUF_SIZE,
                              "%c %6.1fms",
                              (peer == eee->curr_sn) ? 'A' : 'S',
                              peer->weight_state->metric);
-        } else {
-            chars = snprintf(out, SN_SELECTION_CRITERION_BUF_SIZE, "%c no data",
-                             (peer == eee->curr_sn) ? 'A' : 'S');
         }
         if(chars > SN_SELECTION_CRITERION_BUF_SIZE) {
             traceEvent(TRACE_ERROR, "selection_criterion buffer overflow");

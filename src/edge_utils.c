@@ -1532,6 +1532,7 @@ static void sn_weight_recompute_metric (n2n_edge_t *eee, sn_weight_state_t *ws) 
     ws->metric = avg_rtt_ms
                + loss_rate * (double)eee->conf.sn_weight_loss
                + jitter_ms * ((double)eee->conf.sn_weight_jitter / 1000.0);
+    ws->valid_samples = valid_n;
     ws->metric_seq++;
 }
 
@@ -2172,10 +2173,42 @@ void update_supernode_reg (n2n_edge_t * eee, time_t now) {
     check_join_multicast_group(eee);
 
     if(0 == eee->sup_attempts) {
-        /* Give up on that supernode and try the next one. */
-        sn_selection_criterion_bad(&(eee->curr_sn->selection_criterion));
-        sn_selection_sort(&(eee->conf.supernodes));
-        eee->curr_sn = eee->conf.supernodes;
+        /* Give up on that supernode and try the next one. Under SN_SELECTION_STRATEGY_WEIGHT,
+         * selection_criterion is never (re-)computed (see sn_selection_criterion_calculate()) --
+         * it only ever gets pinned to sn_selection_criterion_bad()'s fixed sentinel value by this
+         * very code path. Once every configured supernode has failed a handshake at least once
+         * (easy to happen in ordinary operation), all their criteria end up permanently tied at
+         * that same sentinel, HASH_SORT's tie-break falls back to original list order, and
+         * eee->conf.supernodes ends up pointing at the exact same entry every single time --
+         * confirmed live: an edge spun retrying the one that had *just* failed, over and over,
+         * for 14 minutes straight, never once trying the other configured supernode even though
+         * it was healthy the whole time. Use the real weight data instead when it's available. */
+        if(eee->conf.sn_selection_strategy == SN_SELECTION_STRATEGY_WEIGHT) {
+            peer_info_t *wpeer, *wtmp, *best = NULL;
+
+            HASH_ITER(hh, eee->conf.supernodes, wpeer, wtmp) {
+                if((wpeer == eee->curr_sn) || !wpeer->weight_state
+                  || !wpeer->weight_state->sample_count || !wpeer->weight_state->valid_samples)
+                    continue; /* the one that just failed, no data yet, or itself unreachable */
+
+                if(!best || (wpeer->weight_state->metric < best->weight_state->metric))
+                    best = wpeer;
+            }
+
+            if(best)
+                eee->curr_sn = best;
+            else {
+                /* nobody else has usable data yet (e.g. right at startup): fall back to the
+                 * legacy round-robin so this doesn't just spin on the same untested entry. */
+                sn_selection_criterion_bad(&(eee->curr_sn->selection_criterion));
+                sn_selection_sort(&(eee->conf.supernodes));
+                eee->curr_sn = eee->conf.supernodes;
+            }
+        } else {
+            sn_selection_criterion_bad(&(eee->curr_sn->selection_criterion));
+            sn_selection_sort(&(eee->conf.supernodes));
+            eee->curr_sn = eee->conf.supernodes;
+        }
         traceEvent(TRACE_WARNING, "supernode not responding, now trying [%s]", supernode_ip(eee));
         reset_sup_attempts(eee);
         // trigger out-of-schedule DNS resolution

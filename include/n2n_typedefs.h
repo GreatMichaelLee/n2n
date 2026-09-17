@@ -326,6 +326,13 @@ typedef struct sn_weight_state {
     uint32_t        prev_rtt_usec;      /* previous completed sample's rtt, for jitter delta calc */
     uint8_t         prev_rtt_valid;     /* whether prev_rtt_usec holds a real value yet */
     double          metric;             /* last computed composite metric, in milliseconds */
+    uint16_t        valid_samples;      /* count of non-lost samples currently in the window (0 means every
+                                          * sample in the window timed out -- metric is then just the flat
+                                          * sn_weight_loss penalty with no real RTT in it, i.e. "unreachable",
+                                          * not a real measured latency. A real, working connection can
+                                          * legitimately have an RTT above sn_weight_loss's default of
+                                          * 1000ms, so metric's raw magnitude alone can't distinguish the
+                                          * two cases -- this flag is what actually does. */
     uint32_t        metric_seq;         /* bumped every time metric is recomputed (fresh probe result in or out) */
     uint32_t        last_eval_metric_seq; /* metric_seq as of this peer's last switch-evaluation pass, so
                                             * better_streak only advances/resets once per actual new probe
