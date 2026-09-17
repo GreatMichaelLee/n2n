@@ -608,16 +608,16 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "SUPERNODES\n");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "%-19s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
-                        "VERSION", "L", "A", "MAC", "EDGE", "SELECTION", "LAST SEEN", "UPTIME");
+                        "%-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                        "SN VER", "L", "A", "MAC", "EDGE", "SELECTION", "LAST SEEN", "UPTIME");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "=============================================================================================================\n");
+                        "==================================================================================================================\n");
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
         snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
         snprintf(uptime_buf, sizeof(uptime_buf), "%9us", (unsigned int)(peer->uptime));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            "%-19s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                            "%-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
                             peer->version,
                             (peer->purgeable) ? "" : "l",
                             (peer == eee->curr_sn) ? (eee->sn_wait ? "." : "*" ) : "",

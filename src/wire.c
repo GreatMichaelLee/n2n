@@ -874,6 +874,7 @@ int encode_SN_PROBE (uint8_t * base,
     retval += encode_uint32(base, idx, pkt->seq);
     retval += encode_uint64(base, idx, pkt->send_time);
     retval += encode_buf(base, idx, pkt->version, sizeof(n2n_version_t));
+    retval += encode_uint32(base, idx, pkt->sn_start_time);
 
     return retval;
 }
@@ -890,6 +891,7 @@ int decode_SN_PROBE (n2n_SN_PROBE_t * pkt,
     retval += decode_uint32(&(pkt->seq), base, rem, idx);
     retval += decode_uint64(&(pkt->send_time), base, rem, idx);
     retval += decode_buf((uint8_t*)pkt->version, sizeof(n2n_version_t), base, rem, idx);
+    retval += decode_uint32(&(pkt->sn_start_time), base, rem, idx);
 
     return retval;
 }

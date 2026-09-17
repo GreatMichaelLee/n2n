@@ -2386,10 +2386,12 @@ static int process_udp (n2n_sn_t * sss,
             traceEvent(TRACE_DEBUG, "Rx SN_PROBE seq=%u from %s",
                        probe.seq, sock_to_cstr(sockbuf, &sender));
 
-            /* hand our own version back on the ACK leg -- the edge has no other way
-             * to learn it under --select-mac/--select-weight, which don't use the
-             * legacy QUERY_PEER/PONG exchange that --select-rtt relies on for this. */
+            /* hand our own version and start_time back on the ACK leg -- the edge has
+             * no other way to learn either under --select-mac/--select-weight, which
+             * don't use the legacy QUERY_PEER/PONG exchange that --select-rtt relies
+             * on for this. */
             memcpy(probe.version, sss->version, sizeof(n2n_version_t));
+            probe.sn_start_time = (uint32_t)sss->start_time;
 
             cmn2.ttl = N2N_DEFAULT_TTL;
             cmn2.pc = MSG_TYPE_SN_PROBE_ACK;
@@ -2636,6 +2638,7 @@ static void sn_broadcast_edge_hints (n2n_sn_t *sss, time_t now) {
 
     struct sn_community *comm, *tmp_comm;
     struct peer_info *src, *tmp_src, *dst, *tmp_dst;
+    node_supernode_association_t *assoc, *tmp_assoc;
 
     HASH_ITER(hh, sss->communities, comm, tmp_comm) {
         if(comm->is_federation)
@@ -2676,6 +2679,55 @@ static void sn_broadcast_edge_hints (n2n_sn_t *sss, time_t now) {
                                           comm->header_iv_ctx_dynamic, time_stamp());
 
                 sendto_peer(sss, dst, pktbuf, idx);
+            }
+
+            /* Also tell edges registered with a *different*, federated supernode --
+             * comm->assoc maps a remote mac to the federated supernode that owns it,
+             * learned for free from ordinary cross-site traffic (see
+             * update_node_supernode_association(), called whenever REGISTER_SUPER
+             * relay or PEER_INFO reveals a mac living elsewhere in the federation).
+             * Route through try_forward() -- the exact same delivery path a genuine
+             * edge-to-edge REGISTER already takes -- instead of inventing a new
+             * supernode-to-supernode message type: it lands on the remote supernode's
+             * ordinary MSG_TYPE_REGISTER handling (this is a completely normal,
+             * already-from-supernode REGISTER from that side's point of view), which
+             * looks dstMac up in *its own* comm->edges and delivers directly if found.
+             * Without this, an edge only ever sees hints from macs that happen to
+             * share its own current supernode -- confirmed live: HK's dev_desc
+             * reached LH fine while both were on the same supernode, then silently
+             * stopped the moment HK's weight-selection moved it to the other one. */
+            HASH_ITER(hh, comm->assoc, assoc, tmp_assoc) {
+                n2n_common_t   cmn;
+                n2n_REGISTER_t reg;
+                uint8_t        pktbuf[N2N_SN_PKTBUF_SIZE];
+                size_t         idx = 0;
+
+                if(0 == memcmp(assoc->mac, src->mac_addr, N2N_MAC_SIZE))
+                    continue; /* shouldn't happen (assoc is for *remote* macs), but be safe */
+
+                memset(&cmn, 0, sizeof(cmn));
+                memset(&reg, 0, sizeof(reg));
+                cmn.ttl = N2N_DEFAULT_TTL;
+                cmn.pc = n2n_register;
+                cmn.flags = N2N_FLAGS_FROM_SUPERNODE;
+                memcpy(cmn.community, comm->community, N2N_COMMUNITY_SIZE);
+
+                reg.cookie = n2n_rand();
+                memcpy(reg.srcMac, src->mac_addr, N2N_MAC_SIZE);
+                memcpy(reg.dstMac, assoc->mac, N2N_MAC_SIZE);
+                memcpy(&(reg.sock), &(src->sock), sizeof(n2n_sock_t));
+                reg.dev_addr.net_addr = src->dev_addr.net_addr;
+                reg.dev_addr.net_bitlen = src->dev_addr.net_bitlen;
+                memcpy(reg.dev_desc, src->dev_desc, N2N_DESC_SIZE);
+
+                encode_REGISTER(pktbuf, &idx, &cmn, &reg);
+
+                if(comm->header_encryption == HEADER_ENCRYPTION_ENABLED)
+                    packet_header_encrypt(pktbuf, idx, idx, comm->header_encryption_ctx_dynamic,
+                                          comm->header_iv_ctx_dynamic, time_stamp());
+
+                try_forward(sss, comm, &cmn, assoc->mac, 0 /* from_supernode: we're the origin */,
+                           pktbuf, idx, now);
             }
         }
     }
