@@ -143,7 +143,9 @@ enum n2n_event_topic {
                                                /* NOT the number of max. TCP connections                    */
 
 /* SN_SELECTION_STRATEGY_WEIGHT defaults, all overridable via edge CLI options */
-#define N2N_SN_PROBE_INTERVAL_DEFAULT      2000    /* ms between probes sent to each known supernode */
+#define N2N_SN_PROBE_INTERVAL_DEFAULT      5000    /* ms between probes sent to each known supernode;
+                                                     * with the default sn_switch_confirm=3, a full
+                                                     * switch confirmation takes 3 * this = 15s */
 #define N2N_SN_PROBE_WINDOW_DEFAULT        20      /* number of probe samples kept per supernode */
 #define N2N_SN_PROBE_TIMEOUT_FACTOR        3       /* a probe is considered lost after this many probe intervals go unanswered */
 #define N2N_SN_WEIGHT_LOSS_DEFAULT         1000    /* ms penalty applied at 100% loss rate */
@@ -158,6 +160,9 @@ enum n2n_event_topic {
                                                      * by real data quickly, instead of potentially never clearing the
                                                      * (deliberately conservative) steady-state threshold against a candidate
                                                      * that is only modestly, but consistently, better. */
+#define N2N_SN_HINT_BROADCAST_INTERVAL     30      /* sec: how often the supernode proactively re-announces each
+                                                     * known edge's dev_addr/dev_desc to every other edge in its
+                                                     * community, see sn_broadcast_edge_hints() in sn_utils.c */
 
 #define N2N_CLOSE_SOCKET_COUNTER_MAX 15        /* number of times of edge's reconnects to supernode after   */
                                                /* which the socket explicitly is closed before reopening    */

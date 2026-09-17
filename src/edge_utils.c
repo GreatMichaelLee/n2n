@@ -1532,6 +1532,7 @@ static void sn_weight_recompute_metric (n2n_edge_t *eee, sn_weight_state_t *ws) 
     ws->metric = avg_rtt_ms
                + loss_rate * (double)eee->conf.sn_weight_loss
                + jitter_ms * ((double)eee->conf.sn_weight_jitter / 1000.0);
+    ws->metric_seq++;
 }
 
 
@@ -1801,10 +1802,17 @@ static void sn_weight_evaluate_switch (n2n_edge_t *eee, time_t now) {
         if((peer == eee->curr_sn) || !peer->weight_state || !peer->weight_state->sample_count)
             continue;
 
-        if(peer->weight_state->metric < threshold_metric)
-            peer->weight_state->better_streak++;
-        else
-            peer->weight_state->better_streak = 0;
+        if(peer->weight_state->metric_seq != peer->weight_state->last_eval_metric_seq) {
+            /* only advance/reset the streak once per actual new probe result for this
+             * peer, not once per evaluate_switch() tick -- see last_eval_metric_seq's
+             * comment in n2n_typedefs.h. */
+            peer->weight_state->last_eval_metric_seq = peer->weight_state->metric_seq;
+
+            if(peer->weight_state->metric < threshold_metric)
+                peer->weight_state->better_streak++;
+            else
+                peer->weight_state->better_streak = 0;
+        }
 
         if((peer->weight_state->better_streak >= eee->conf.sn_switch_confirm)
            && (!best || (peer->weight_state->metric < best->weight_state->metric)))
@@ -3615,20 +3623,37 @@ int run_edge_loop (n2n_edge_t *eee) {
                        HASH_COUNT(eee->known_peers));
         }
 
-        /* Periodically re-send our own REGISTER to already p2p-confirmed peers.
-         * REGISTER is the only carrier for dev_addr/dev_desc, and once a peer is
-         * p2p-confirmed nothing re-sends it again -- if that one-off REGISTER got
-         * lost in transit (observed live: consistently one-directional loss), the
-         * peer's TAP/HINT columns in the management console stay blank forever,
-         * since purge_expired_nodes never fires while real traffic keeps refreshing
-         * last_seen. This is deliberately unconditional -- run identically on every
-         * edge, an occasional lost REGISTER self-heals within a retry or two,
-         * without either side needing to detect its own gap (which it can't: the
-         * missing data lives on the *other* end). */
+        /* Periodically re-send our own REGISTER to every peer we know about --
+         * p2p-confirmed (known_peers) as well as still supernode-relayed
+         * (pending_peers, e.g. a TCP-only (-S2) peer that can never complete a
+         * direct P2P handshake and so stays in this table forever). REGISTER is
+         * the only carrier for dev_addr/dev_desc, and once a peer is p2p-confirmed
+         * nothing ever re-sends it again -- if that one-off REGISTER got lost in
+         * transit (observed live: consistently one-directional loss, in both
+         * tables), the peer's TAP/HINT columns in the management console stay
+         * blank forever, since purge_expired_nodes never fires while real traffic
+         * keeps refreshing last_seen in either table. This is deliberately
+         * unconditional -- run identically on every edge, an occasional lost
+         * REGISTER self-heals within a retry or two, without either side needing
+         * to detect its own gap (which it can't: the missing data lives on the
+         * *other* end). */
         if(now > last_p2p_reannounce + N2N_P2P_REANNOUNCE_INTERVAL) {
             struct peer_info *reannounce_peer, *reannounce_tmp;
             HASH_ITER(hh, eee->known_peers, reannounce_peer, reannounce_tmp)
                 send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
+            HASH_ITER(hh, eee->pending_peers, reannounce_peer, reannounce_tmp) {
+                send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
+                /* also retry via the supernode-forwarded path, exactly like the initial
+                 * registration burst in register_with_new_peer() does: a peer stuck in
+                 * pending_peers is precisely one whose direct path never confirmed (e.g.
+                 * HK's ISP throttles/blocks general UDP on that WAN), so a direct-only
+                 * retry can never succeed there -- the forwarded copy travels over
+                 * whatever transport already reliably reaches the supernode (TCP for
+                 * -S2 edges) and lets the supernode relay it onward over its own,
+                 * unaffected connection to the destination peer. */
+                if(eee->curr_sn)
+                    send_register(eee, &(eee->curr_sn->sock), reannounce_peer->mac_addr, N2N_FORWARDED_REG_COOKIE);
+            }
             last_p2p_reannounce = now;
         }
 

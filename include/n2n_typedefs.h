@@ -326,7 +326,14 @@ typedef struct sn_weight_state {
     uint32_t        prev_rtt_usec;      /* previous completed sample's rtt, for jitter delta calc */
     uint8_t         prev_rtt_valid;     /* whether prev_rtt_usec holds a real value yet */
     double          metric;             /* last computed composite metric, in milliseconds */
-    uint16_t        better_streak;      /* consecutive probe windows this peer beat the current supernode by switch-threshold */
+    uint32_t        metric_seq;         /* bumped every time metric is recomputed (fresh probe result in or out) */
+    uint32_t        last_eval_metric_seq; /* metric_seq as of this peer's last switch-evaluation pass, so
+                                            * better_streak only advances/resets once per actual new probe
+                                            * result -- not once per evaluate_switch() tick, which runs on
+                                            * its own timer and would otherwise let a single stale sample
+                                            * (still sitting in the window) rack up confirmations on ticks
+                                            * where nothing new was actually learned about this peer. */
+    uint16_t        better_streak;      /* consecutive *fresh-sampled* probe rounds this peer beat the current supernode by switch-threshold */
     /* TCP-only probe transport (used when the edge's data connection is TCP, see conf.connect_tcp).
      * connect() for this socket is resolved synchronously (bounded by a short internal select())
      * inside sn_weight_open_probe_tcp() at the moment it is opened, so by the time probe_tcp_sock
