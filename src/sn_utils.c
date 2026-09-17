@@ -931,19 +931,21 @@ void update_node_supernode_association (struct sn_community *comm,
     if(!assoc) {
         // create a new association
         assoc = (node_supernode_association_t*)calloc(1, sizeof(node_supernode_association_t));
-        if(assoc) {
-            memcpy(&(assoc->mac), edgeMac, sizeof(n2n_mac_t));
-            memcpy(&(assoc->sock), sender_sock, sock_size);
-            assoc->sock_len = sock_size;
-            assoc->last_seen = now;
-            HASH_ADD(hh, comm->assoc, mac, sizeof(n2n_mac_t), assoc);
-        } else {
-            // already there, update socket and time only
-            memcpy(&(assoc->sock), sender_sock, sock_size);
-            assoc->sock_len = sock_size;
-            assoc->last_seen = now;
-        }
+        if(!assoc)
+            return;
+        memcpy(&(assoc->mac), edgeMac, sizeof(n2n_mac_t));
+        HASH_ADD(hh, comm->assoc, mac, sizeof(n2n_mac_t), assoc);
     }
+    /* Was previously only reached on a calloc() *failure* (the "already there,
+     * update socket and time only" comment was attached to the wrong branch --
+     * a genuine copy-paste bug, not intentional): an *existing* association's
+     * sock/last_seen never actually got refreshed on subsequent sightings of
+     * the same MAC, only set once at creation and left to go stale forever
+     * after. Confirmed live 2026-09-17 while building the REMOTE EDGES mgmt
+     * table on top of this data. */
+    memcpy(&(assoc->sock), sender_sock, sock_size);
+    assoc->sock_len = sock_size;
+    assoc->last_seen = now;
 }
 
 
