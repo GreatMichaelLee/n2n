@@ -798,6 +798,13 @@ struct n2n_edge {
     time_t                           last_sweep;                         /**< Last time a sweep was performed. */
     time_t                           start_time;                         /**< For calculating uptime */
     time_t                           sn_weight_last_eval;                /**< SN_SELECTION_STRATEGY_WEIGHT: last time the switch-decision hysteresis was evaluated. */
+    uint8_t                          dynamic_key_ready;                  /**< set once handle_remote_auth() has installed a real (non-placeholder)
+                                                                            *   dynamic key from a REGISTER_SUPER_ACK; irrelevant/left 0 when conf.shared_secret
+                                                                            *   is unset (no user/pw auth, so header_encryption is never force-enabled and
+                                                                            *   nothing needs to wait on this). SN_SELECTION_STRATEGY_WEIGHT gates probes on
+                                                                            *   it: sending a probe before this is set would be encrypted (if at all) with
+                                                                            *   the random placeholder key edge_init() seeds header_encryption_ctx_dynamic
+                                                                            *   with, which the supernode can never decrypt -- see sn_weight_tick(). */
 
 
     struct n2n_edge_stats            stats;                              /**< Statistics */

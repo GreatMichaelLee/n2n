@@ -935,6 +935,7 @@ static int handle_remote_auth (n2n_edge_t *eee, struct peer_info *peer, const n2
             packet_header_change_dynamic_key(tmp_token + N2N_PRIVATE_PUBLIC_KEY_SIZE,
                                              &(eee->conf.header_encryption_ctx_dynamic),
                                              &(eee->conf.header_iv_ctx_dynamic));
+            eee->dynamic_key_ready = 1;
             break;
         default:
             break;
@@ -1751,6 +1752,16 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
 
     if(eee->conf.sn_selection_strategy != SN_SELECTION_STRATEGY_WEIGHT)
         return;
+
+    if(eee->conf.shared_secret && !eee->dynamic_key_ready) {
+        /* user/pw auth (-J) forces header_encryption on (see edge.c's "force header
+         * encryption" block), but header_encryption_ctx_dynamic starts out seeded with
+         * a random placeholder key (edge_init()) until the real one arrives via a
+         * successful REGISTER_SUPER_ACK (handle_remote_auth()). A probe encrypted with
+         * the placeholder key is undecryptable by the supernode and gets silently
+         * dropped -- wait for the real key before sending anything. */
+        return;
+    }
 
     now_us = time_stamp();
     probe_interval_us = (uint64_t)eee->conf.sn_probe_interval * 1000ULL;
