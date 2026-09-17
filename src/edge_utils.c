@@ -2212,11 +2212,26 @@ void update_supernode_reg (n2n_edge_t * eee, time_t now) {
             if(best)
                 eee->curr_sn = best;
             else {
-                /* nobody else has usable data yet (e.g. right at startup): fall back to the
-                 * legacy round-robin so this doesn't just spin on the same untested entry. */
-                sn_selection_criterion_bad(&(eee->curr_sn->selection_criterion));
-                sn_selection_sort(&(eee->conf.supernodes));
-                eee->curr_sn = eee->conf.supernodes;
+                /* nobody else has usable weight data yet (e.g. right at startup, or --
+                 * confirmed live -- both supernodes simultaneously having probe trouble):
+                 * do NOT fall back to the legacy sn_selection_criterion_bad()/sort()
+                 * round-robin here. That mechanism has the exact permanently-tied-once-
+                 * both-have-failed-once flaw this whole function exists to work around
+                 * (see the comment above) -- it's not specific to the "weight data
+                 * available" case, so reusing it as a fallback just reintroduces the same
+                 * bug through a side door. Confirmed live: an edge spun retrying the exact
+                 * same supernode for 9 minutes straight this way, never once trying the
+                 * other, despite this function running on every attempt. Just deterministically
+                 * pick literally any other configured supernode instead -- with the common
+                 * case of exactly 2 supernodes this is a plain toggle, and it can never get
+                 * stuck the way a tied comparison can, because there's no comparison at all. */
+                peer_info_t *other = NULL, *tmp2;
+                HASH_ITER(hh, eee->conf.supernodes, other, tmp2) {
+                    if(other != eee->curr_sn)
+                        break;
+                }
+                if(other)
+                    eee->curr_sn = other;
             }
         } else {
             sn_selection_criterion_bad(&(eee->curr_sn->selection_criterion));
