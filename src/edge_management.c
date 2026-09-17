@@ -652,11 +652,17 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
 
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "SUPERNODES\n");
+    /* "### |" prefix added purely so this header line gets recognized/highlighted
+     * the same way the TAP/MAC/EDGE/HINT header and the IPV6 ROUTES header above
+     * do in some terminal clients (a leading "###" seems to trigger that) --
+     * added a matching numbered index to each data row below so the column
+     * actually lines up, not just the header text. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "%-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %19s\n",
+                        " ### | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %19s\n",
                         "SN VER", "L", "A", "MAC", "ADDRESS", "SELECTION", "SEEN", "STARTED (SN LOCAL TIME)");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "===============================================================================================================================\n");
+    num = 0;
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
         snprintf(time_buf, sizeof(time_buf), "%5us", (unsigned int)(now - peer->last_seen));
@@ -678,7 +684,8 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
             strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&started));
         }
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            "%-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %19s\n",
+                            "%4u | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %19s\n",
+                            ++num,
                             peer->version,
                             (peer->purgeable) ? "" : "l",
                             (peer == eee->curr_sn) ? (eee->sn_wait ? "." : "*" ) : "",
