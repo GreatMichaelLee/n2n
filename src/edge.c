@@ -829,6 +829,66 @@ static int setOption (int optkey, char *optargument, n2n_tuntap_priv_config_t *e
             break;
         }
 
+        case '&': /* --ip6-addr, static IPv6 tunnel address as address/prefixlen, e.g. fd00::2/64.
+                    * Static only -- there is no supernode-assigned IPv6 mode, see
+                    * n2n_tuntap_priv_config_t.ip6_addr/ip6_prefix's comment. */ {
+            char *slash = strchr(optargument, '/');
+            struct in6_addr tmp6;
+            int prefix;
+
+            if(!slash) {
+                traceEvent(TRACE_ERROR, "--ip6-addr requires address/prefixlen, e.g. fd00::2/64");
+                break;
+            }
+            *slash = '\0';
+            if(inet_pton(AF_INET6, optargument, &tmp6) != 1) {
+                traceEvent(TRACE_ERROR, "--ip6-addr: invalid IPv6 address '%s'", optargument);
+                *slash = '/';
+                break;
+            }
+            prefix = atoi(slash + 1);
+            *slash = '/';
+            if((prefix <= 0) || (prefix > 128)) {
+                traceEvent(TRACE_ERROR, "--ip6-addr: prefix length must be 1-128");
+                break;
+            }
+            inet_ntop(AF_INET6, &tmp6, ec->ip6_addr, sizeof(ip6str_t));
+            ec->ip6_prefix = prefix;
+
+            break;
+        }
+
+        case '*': /* --advertise-ip6, broadcast this CIDR to the community as a route this edge
+                    * proxies for -- subnet/prefixlen, e.g. fd00:3::/64, or ::/0 for exit-node
+                    * egress. Purely a broadcast of intent (MSG_TYPE_COMMUNITY_ROUTE_ADV): core
+                    * never applies this route itself, see n2n_learned_route_t. */ {
+            char *slash = strchr(optargument, '/');
+            struct in6_addr tmp6;
+            int prefix;
+
+            if(!slash) {
+                traceEvent(TRACE_ERROR, "--advertise-ip6 requires subnet/prefixlen, e.g. fd00:3::/64 or ::/0");
+                break;
+            }
+            *slash = '\0';
+            if(inet_pton(AF_INET6, optargument, &tmp6) != 1) {
+                traceEvent(TRACE_ERROR, "--advertise-ip6: invalid IPv6 subnet '%s'", optargument);
+                *slash = '/';
+                break;
+            }
+            prefix = atoi(slash + 1);
+            *slash = '/';
+            if((prefix < 0) || (prefix > 128)) {
+                traceEvent(TRACE_ERROR, "--advertise-ip6: prefix length must be 0-128");
+                break;
+            }
+            memcpy(conf->advertise_ip6_subnet.net_addr, &tmp6, IPV6_SIZE);
+            conf->advertise_ip6_subnet.net_bitlen = (uint8_t)prefix;
+            conf->advertise_ip6 = 1;
+
+            break;
+        }
+
         case 'h': /* quick reference */ {
             return 2;
         }
@@ -897,6 +957,8 @@ static const struct option long_options[] =
         { "weight-jitter",       required_argument, NULL, '$' }, /*                            '$'             weighted strategy: jitter weight, milli-units */
         { "switch-threshold",    required_argument, NULL, '%' }, /*                            '%'             weighted strategy: percent improvement required to switch */
         { "switch-confirm",      required_argument, NULL, '^' }, /*                            '^'             weighted strategy: consecutive confirmations required to switch */
+        { "ip6-addr",            required_argument, NULL, '&' }, /*                            '&'             static IPv6 tunnel address, addr/prefixlen */
+        { "advertise-ip6",       required_argument, NULL, '*' }, /*                            '*'             advertise this CIDR to the community, subnet/prefixlen (::/0 for exit-node egress) */
         { NULL,                  0,                 NULL,  0  }
     };
 
@@ -1335,6 +1397,18 @@ int main (int argc, char* argv[]) {
                                      eee->tuntap_priv_conf.ip_addr,
                                      eee->tuntap_priv_conf.netmask,
                                      macaddr_str(mac_buf, eee->device.mac_addr));
+#ifdef __linux__
+            /* Stage A IPv6 support (--ip6-addr): only tuntap_linux.c implements
+             * this today, see tuntap_set_address6()'s comment in n2n.h. A
+             * failure here is logged but not fatal -- the tunnel keeps working
+             * over IPv4, matching how the rest of edge.c treats optional
+             * post-setup steps. */
+            if(eee->tuntap_priv_conf.ip6_prefix > 0) {
+                if(tuntap_set_address6(&eee->device, eee->tuntap_priv_conf.ip6_addr, eee->tuntap_priv_conf.ip6_prefix) < 0)
+                    traceEvent(TRACE_WARNING, "failed to assign IPv6 address %s/%d to tap device",
+                               eee->tuntap_priv_conf.ip6_addr, eee->tuntap_priv_conf.ip6_prefix);
+            }
+#endif
             runlevel = 5;
             // no more answers required
             seek_answer = 0;

@@ -132,6 +132,40 @@ static void mgmt_supernodes (mgmt_req_t *req, strbuf_t *buf) {
     }
 }
 
+/* Stage A IPv6 support: read-only view of eee->learned_routes, the IPv6
+ * CIDRs other edges in the community have advertised via
+ * MSG_TYPE_COMMUNITY_ROUTE_ADV (see that type's comment). This is the only
+ * place this data leaves core -- nothing in n2n itself ever applies these
+ * routes to the OS routing table; a platform integration layer (OpenWrt's
+ * n2n.init today, a future Windows/Android/iOS client's own native code)
+ * polls this command and decides what, if anything, to do with it. */
+static void mgmt_routes (mgmt_req_t *req, strbuf_t *buf) {
+    size_t msg_len;
+    n2n_learned_route_t *route, *tmpRoute;
+    macstr_t mac_buf;
+    ip6str_t subnet_buf;
+
+    HASH_ITER(hh, req->eee->learned_routes, route, tmpRoute) {
+
+        inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
+
+        msg_len = snprintf(buf->str, buf->size,
+                           "{"
+                           "\"_tag\":\"%s\","
+                           "\"_type\":\"row\","
+                           "\"macaddr\":\"%s\","
+                           "\"subnet\":\"%s/%u\","
+                           "\"last_seen\":%li}\n",
+                           req->tag,
+                           macaddr_str(mac_buf, route->srcMac),
+                           subnet_buf,
+                           route->subnet.net_bitlen,
+                           route->last_seen);
+
+        send_reply(req, buf, msg_len);
+    }
+}
+
 static void mgmt_edges_row (mgmt_req_t *req, strbuf_t *buf, struct peer_info *peer, char *mode) {
     size_t msg_len;
     macstr_t mac_buf;
@@ -303,6 +337,7 @@ static const mgmt_handler_t mgmt_handlers[] = {
     { .cmd = "communities", .help = "Show current community", .func = mgmt_communities},
     { .cmd = "edges", .help = "List current edges/peers", .func = mgmt_edges},
     { .cmd = "supernodes", .help = "List current supernodes", .func = mgmt_supernodes},
+    { .cmd = "routes", .help = "List learned IPv6 community routes", .func = mgmt_routes},
     { .cmd = "info", .help = "Provide basic edge information", .func = mgmt_edge_info},
     { .cmd = "timestamps", .help = "Event timestamps", .func = mgmt_timestamps},
     { .cmd = "packetstats", .help = "traffic counters", .func = mgmt_packetstats},

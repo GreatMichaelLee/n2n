@@ -188,8 +188,89 @@ void test_UNREGISTER_SUPER (n2n_common_t *common) {
     printf("\n");
 }
 
+/* Unlike the tests above (which only encode + hexdump for manual eyeballing),
+ * this one actually decodes what it encoded and asserts every field
+ * round-trips -- covering both the "advertise" and "withdraw" branches, and
+ * both a real /64 and the ::/0 default-route encoding, since those are the
+ * two cases edge_utils.c's learn/cache logic and n2n.init's future
+ * consumer both need to tell apart. Returns 0 on success, exits nonzero on
+ * any mismatch so this can gate a build. */
+int test_COMMUNITY_ROUTE_ADV (n2n_common_t *common) {
+    char *test_name = "COMMUNITY_ROUTE_ADV";
+    int failed = 0;
+
+    struct {
+        n2n_mac_t   mac;
+        uint8_t     subnet[IPV6_SIZE];
+        uint8_t     bitlen;
+        uint8_t     withdraw;
+    } cases[] = {
+        { {0x40,0x41,0x42,0x43,0x44,0x45},
+          {0xfd,0x00,0x00,0x03,0,0,0,0,0,0,0,0,0,0,0,0}, 64, 0 }, /* advertise fd00:3::/64 */
+        { {0x40,0x41,0x42,0x43,0x44,0x45},
+          {0xfd,0x00,0x00,0x03,0,0,0,0,0,0,0,0,0,0,0,0}, 64, 1 }, /* withdraw the same route */
+        { {0x50,0x51,0x52,0x53,0x54,0x55},
+          {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, 0, 0 },              /* advertise ::/0 (exit-node egress) */
+    };
+    size_t i;
+
+    common->pc = MSG_TYPE_COMMUNITY_ROUTE_ADV;
+
+    for(i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        n2n_COMMUNITY_ROUTE_ADV_t adv_in, adv_out;
+        uint8_t pktbuf[N2N_PKT_BUF_SIZE];
+        size_t idx = 0, rem;
+        n2n_common_t common_out;
+
+        memset(&adv_in, 0, sizeof(adv_in));
+        memcpy(adv_in.srcMac, cases[i].mac, N2N_MAC_SIZE);
+        memcpy(adv_in.subnet.net_addr, cases[i].subnet, IPV6_SIZE);
+        adv_in.subnet.net_bitlen = cases[i].bitlen;
+        adv_in.withdraw = cases[i].withdraw;
+
+        encode_COMMUNITY_ROUTE_ADV(pktbuf, &idx, common, &adv_in);
+
+        /* decode exactly like the real dispatchers do: decode_common() first
+         * (it advances idx/rem past the header), then the message body. */
+        rem = idx;
+        idx = 0;
+        decode_common(&common_out, pktbuf, &rem, &idx);
+        decode_COMMUNITY_ROUTE_ADV(&adv_out, &common_out, pktbuf, &rem, &idx);
+
+        if(memcmp(adv_in.srcMac, adv_out.srcMac, N2N_MAC_SIZE) != 0) {
+            fprintf(stderr, "%s: case %zu: srcMac mismatch\n", test_name, i);
+            failed = 1;
+        }
+        if(memcmp(adv_in.subnet.net_addr, adv_out.subnet.net_addr, IPV6_SIZE) != 0) {
+            fprintf(stderr, "%s: case %zu: subnet.net_addr mismatch\n", test_name, i);
+            failed = 1;
+        }
+        if(adv_in.subnet.net_bitlen != adv_out.subnet.net_bitlen) {
+            fprintf(stderr, "%s: case %zu: subnet.net_bitlen mismatch (%u != %u)\n",
+                    test_name, i, adv_in.subnet.net_bitlen, adv_out.subnet.net_bitlen);
+            failed = 1;
+        }
+        if(adv_in.withdraw != adv_out.withdraw) {
+            fprintf(stderr, "%s: case %zu: withdraw mismatch (%u != %u)\n",
+                    test_name, i, adv_in.withdraw, adv_out.withdraw);
+            failed = 1;
+        }
+        if(common_out.pc != MSG_TYPE_COMMUNITY_ROUTE_ADV) {
+            fprintf(stderr, "%s: case %zu: common.pc mismatch after decode_common (%u != %u)\n",
+                    test_name, i, common_out.pc, MSG_TYPE_COMMUNITY_ROUTE_ADV);
+            failed = 1;
+        }
+    }
+
+    if(!failed)
+        fprintf(stderr, "%s: tested, %zu cases, all round-tripped correctly\n", test_name, sizeof(cases) / sizeof(cases[0]));
+
+    return failed;
+}
+
 int main (int argc, char * argv[]) {
     char *test_name = "environment";
+    int failed = 0;
 
     n2n_common_t common;
     init_common( &common, "abc123def456z" );
@@ -199,8 +280,9 @@ int main (int argc, char * argv[]) {
     test_REGISTER(&common);
     test_REGISTER_SUPER(&common);
     test_UNREGISTER_SUPER(&common);
+    failed |= test_COMMUNITY_ROUTE_ADV(&common);
     // TODO: add more wire tests
 
-    return 0;
+    return failed;
 }
 

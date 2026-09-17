@@ -1368,6 +1368,66 @@ void send_register_super (n2n_edge_t *eee) {
 }
 
 
+/* Periodically (re-)broadcast this edge's advertise_ip6_subnet, if any, to
+ * the rest of its community via MSG_TYPE_COMMUNITY_ROUTE_ADV -- see that
+ * type's comment. No-op when conf.advertise_ip6 is unset. Re-advertised on
+ * the same cadence as REGISTER_SUPER (conf.register_interval) rather than a
+ * dedicated timer, since that's already a sensible "is this edge still
+ * alive and configured this way" heartbeat and keeps this from needing its
+ * own tunable. Purely a broadcast of intent: core never applies this route
+ * itself anywhere, on the sending or the receiving edge (see
+ * n2n_learned_route_t / the MSG_TYPE_COMMUNITY_ROUTE_ADV case in the main
+ * dispatcher). */
+static void send_route_advertisement (n2n_edge_t *eee, time_t now) {
+
+    uint8_t pktbuf[N2N_PKT_BUF_SIZE] = {0};
+    size_t idx;
+    n2n_common_t cmn;
+    n2n_COMMUNITY_ROUTE_ADV_t adv;
+    n2n_sock_str_t sockbuf;
+
+    if(!eee->conf.advertise_ip6 || !eee->curr_sn)
+        return;
+
+    if(now < (eee->last_route_adv + eee->conf.register_interval))
+        return;
+
+    if(eee->conf.shared_secret && !eee->dynamic_key_ready)
+        /* see sn_weight_tick()'s identical guard: header_encryption_ctx_dynamic
+         * starts out seeded with a random placeholder key until the real one
+         * arrives via REGISTER_SUPER_ACK; sending before that is undecryptable
+         * by the supernode and would be silently dropped. */
+        return;
+
+    memset(&cmn, 0, sizeof(cmn));
+    memset(&adv, 0, sizeof(adv));
+
+    cmn.ttl = N2N_DEFAULT_TTL;
+    cmn.pc = MSG_TYPE_COMMUNITY_ROUTE_ADV;
+    cmn.flags = 0;
+    memcpy(cmn.community, eee->conf.community_name, N2N_COMMUNITY_SIZE);
+
+    memcpy(adv.srcMac, eee->device.mac_addr, N2N_MAC_SIZE);
+    adv.subnet = eee->conf.advertise_ip6_subnet;
+    adv.withdraw = 0;
+
+    idx = 0;
+    encode_COMMUNITY_ROUTE_ADV(pktbuf, &idx, &cmn, &adv);
+
+    if(eee->conf.header_encryption == HEADER_ENCRYPTION_ENABLED) {
+        packet_header_encrypt(pktbuf, idx, idx,
+                              eee->conf.header_encryption_ctx_dynamic, eee->conf.header_iv_ctx_dynamic,
+                              time_stamp());
+    }
+
+    traceEvent(TRACE_DEBUG, "send COMMUNITY_ROUTE_ADV to [%s]", sock_to_cstr(sockbuf, &(eee->curr_sn->sock)));
+
+    sendto_sock(eee, pktbuf, idx, &(eee->curr_sn->sock));
+
+    eee->last_route_adv = now;
+}
+
+
 static void send_unregister_super (n2n_edge_t *eee) {
 
     uint8_t pktbuf[N2N_PKT_BUF_SIZE] = {0};
@@ -3413,6 +3473,66 @@ void process_udp (n2n_edge_t *eee, const struct sockaddr *sender_sock, const SOC
                 break;
             }
 
+            case MSG_TYPE_COMMUNITY_ROUTE_ADV: {
+                /* A peer advertising (or withdrawing) an IPv6 CIDR it proxies
+                 * -- see n2n_COMMUNITY_ROUTE_ADV_t's comment. This edge only
+                 * learns/caches it in eee->learned_routes for the JSON
+                 * management port to expose read-only; nothing here alters
+                 * routing/forwarding behavior. Applying (or not) any of this
+                 * to the OS routing table is entirely up to whichever
+                 * platform integration layer polls the management port. */
+                n2n_COMMUNITY_ROUTE_ADV_t adv;
+                n2n_learned_route_t *route, *tmp_route, *found = NULL;
+
+                decode_COMMUNITY_ROUTE_ADV(&adv, &cmn, udp_buf, &rem, &idx);
+
+                if(eee->conf.header_encryption == HEADER_ENCRYPTION_ENABLED) {
+                    if(!find_peer_time_stamp_and_verify(eee, sn, null_mac, stamp, TIME_STAMP_ALLOW_JITTER)) {
+                        traceEvent(TRACE_DEBUG, "dropped COMMUNITY_ROUTE_ADV due to time stamp error");
+                        return;
+                    }
+                }
+
+                if(memcmp(adv.srcMac, eee->device.mac_addr, N2N_MAC_SIZE) == 0) {
+                    /* our own advertisement, echoed back by the supernode -- ignore */
+                    break;
+                }
+
+                HASH_ITER(hh, eee->learned_routes, route, tmp_route) {
+                    if((memcmp(route->srcMac, adv.srcMac, N2N_MAC_SIZE) == 0) &&
+                       (memcmp(route->subnet.net_addr, adv.subnet.net_addr, IPV6_SIZE) == 0) &&
+                       (route->subnet.net_bitlen == adv.subnet.net_bitlen)) {
+                        found = route;
+                        break;
+                    }
+                }
+
+                if(adv.withdraw) {
+                    if(found) {
+                        HASH_DEL(eee->learned_routes, found);
+                        free(found);
+                        traceEvent(TRACE_INFO, "withdrew learned route from %s", macaddr_str(mac_buf1, adv.srcMac));
+                    }
+                } else if(found) {
+                    found->last_seen = now;
+                } else {
+                    route = (n2n_learned_route_t *)calloc(1, sizeof(n2n_learned_route_t));
+                    if(route) {
+                        memcpy(route->srcMac, adv.srcMac, N2N_MAC_SIZE);
+                        route->subnet = adv.subnet;
+                        route->last_seen = now;
+                        /* keyed on srcMac alone; the same edge can advertise more than
+                         * one subnet, so lookups above always walk the full list rather
+                         * than relying on HASH_FIND to pick "the" entry for a MAC -- a
+                         * standard, documented uthash pattern for non-unique keys. */
+                        HASH_ADD(hh, eee->learned_routes, srcMac, sizeof(n2n_mac_t), route);
+                        traceEvent(TRACE_INFO, "learned new route from %s", macaddr_str(mac_buf1, adv.srcMac));
+                    }
+                }
+
+                break;
+            }
+
             default:
                 /* Not a known message type */
                 traceEvent(TRACE_INFO, "unable to handle packet type %d: ignored", (signed int)msg_type);
@@ -3668,6 +3788,7 @@ int run_edge_loop (n2n_edge_t *eee) {
 
         // finished processing select data
         update_supernode_reg(eee, now);
+        send_route_advertisement(eee, now);
 
         numPurged = 0;
         // keep, i.e. do not purge, the known peers while no supernode supernode connection

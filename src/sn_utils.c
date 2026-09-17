@@ -2617,6 +2617,63 @@ static int process_udp (n2n_sn_t * sss,
             break;
         }
 
+        case MSG_TYPE_COMMUNITY_ROUTE_ADV: {
+            /* An edge broadcasting a CIDR it proxies (or withdrawing one) to
+             * the rest of its community -- see n2n_COMMUNITY_ROUTE_ADV_t's
+             * comment. Handled like a multicast PACKET: decode, re-encode
+             * with this supernode's FROM_SUPERNODE flag when it's the first
+             * hop, then try_broadcast() to every other edge in the
+             * community. This supernode never inspects/acts on the route
+             * itself, does not cache it, and does not touch run_sn_loop()'s
+             * select()/connection handling at all -- purely additive relay,
+             * same shape as the existing PACKET/PEER_INFO forwarding. */
+            n2n_COMMUNITY_ROUTE_ADV_t adv;
+            n2n_common_t              cmn2;
+            uint8_t                   encbuf[N2N_SN_PKTBUF_SIZE];
+            size_t                    encx = 0;
+            uint8_t                   *rec_buf;
+
+            if(!comm) {
+                traceEvent(TRACE_DEBUG, "COMMUNITY_ROUTE_ADV with unknown community %s", cmn.community);
+                return -1;
+            }
+
+            sss->stats.last_fwd = now;
+            decode_COMMUNITY_ROUTE_ADV(&adv, &cmn, udp_buf, &rem, &idx);
+
+            if(!from_supernode && (comm->header_encryption == HEADER_ENCRYPTION_ENABLED)) {
+                if(!find_edge_time_stamp_and_verify(comm->edges, sn, adv.srcMac, stamp, TIME_STAMP_ALLOW_JITTER)) {
+                    traceEvent(TRACE_DEBUG, "dropped COMMUNITY_ROUTE_ADV due to time stamp error");
+                    return -1;
+                }
+            }
+
+            traceEvent(TRACE_DEBUG, "Rx COMMUNITY_ROUTE_ADV from %s (%s) %s",
+                       macaddr_str(mac_buf, adv.srcMac),
+                       (from_supernode ? "from sn" : "local"),
+                       (adv.withdraw ? "withdraw" : "advertise"));
+
+            if(!from_supernode) {
+                memcpy(&cmn2, &cmn, sizeof(n2n_common_t));
+                cmn2.flags |= N2N_FLAGS_FROM_SUPERNODE;
+
+                rec_buf = encbuf;
+                encode_COMMUNITY_ROUTE_ADV(encbuf, &encx, &cmn2, &adv);
+
+                if(comm->header_encryption == HEADER_ENCRYPTION_ENABLED) {
+                    packet_header_encrypt(rec_buf, encx, encx,
+                                          comm->header_encryption_ctx_dynamic, comm->header_iv_ctx_dynamic,
+                                          time_stamp());
+                }
+            } else {
+                rec_buf = udp_buf;
+                encx = udp_size;
+            }
+
+            try_broadcast(sss, comm, &cmn, adv.srcMac, from_supernode, rec_buf, encx, now);
+            break;
+        }
+
         default:
             /* Not a known message type */
             traceEvent(TRACE_WARNING, "unable to handle packet type %d: ignored", (signed int)msg_type);

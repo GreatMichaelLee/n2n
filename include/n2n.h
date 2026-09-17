@@ -133,6 +133,13 @@ int tuntap_write (struct tuntap_dev *tuntap, unsigned char *buf, int len);
 void tuntap_close (struct tuntap_dev *tuntap);
 void tuntap_get_address (struct tuntap_dev *tuntap);
 
+/* Stage A IPv6 support: assign a static IPv6 address/prefix to an
+ * already-open TAP device. Declared unconditionally like the five
+ * functions above, but only implemented in tuntap_linux.c today -- every
+ * call site must be guarded with #ifdef __linux__ until the other
+ * tuntap_*.c platforms grow their own implementation. */
+int tuntap_set_address6 (struct tuntap_dev *device, const char *ip6_addr, int ip6_prefix);
+
 /* Utils */
 char* inaddrtoa (ipstr_t out, struct in_addr addr);
 char* intoa (uint32_t addr, char* buf, uint16_t buf_len);

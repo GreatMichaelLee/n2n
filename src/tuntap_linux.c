@@ -24,9 +24,10 @@
 #include <sys/uio.h>                  // for iovec
 #include <errno.h>                    // for errno
 #include <fcntl.h>                    // for open, O_RDWR
+#include <linux/if_addr.h>            // for ifaddrmsg, IFA_LOCAL, IFA_ADDRESS
 #include <linux/if_tun.h>             // for IFF_NO_PI, IFF_TAP, TUNSETIFF
 #include <linux/netlink.h>            // for sockaddr_nl, nlmsghdr, NETLINK_...
-#include <linux/rtnetlink.h>          // for ifinfomsg, RTMGRP_LINK
+#include <linux/rtnetlink.h>          // for ifinfomsg, RTMGRP_LINK, RTM_NEWADDR
 #include <net/if.h>                   // for ifreq, IFNAMSIZ, ifr_name, ifr_...
 #include <net/if_arp.h>               // for ARPHRD_ETHER
 #include <netinet/in.h>               // for sockaddr_in, IPPROTO_IP, in_addr
@@ -252,6 +253,110 @@ int tuntap_open (tuntap_dev *device,
     device->if_idx = if_nametoindex(dev);
 
     return device->fd;
+}
+
+
+/** @brief  Assign a static IPv6 address/prefix to an already-open TAP
+ *          device (Stage A of the IPv6 feature, see edge.c's --ip6-addr).
+ *          There is no ioctl equivalent of SIOCSIFADDR for IPv6 on Linux,
+ *          so this goes through rtnetlink (RTM_NEWADDR) directly rather
+ *          than extending setup_ifname()'s ioctl style, and rather than
+ *          shelling out to `ip -6 addr add` (keeps this self-contained the
+ *          same way the IPv4 path already is, with no new external-command
+ *          dependency).
+ *
+ *          This function only exists in this file: it is declared
+ *          unconditionally in n2n.h (matching how tuntap_open/read/write/
+ *          close already are, despite each having a distinct per-platform
+ *          body), but every call site is guarded with #ifdef __linux__ so
+ *          the other tuntap_*.c platforms build unaffected until they grow
+ *          their own implementation -- see the plan at
+ *          /home/builder/.claude/plans/atomic-cooking-prism.md.
+ *
+ *  @return 0 on success (including a no-op when ip6_prefix is unset),
+ *          negative on error.
+ */
+int tuntap_set_address6 (struct tuntap_dev *device, const char *ip6_addr, int ip6_prefix) {
+
+    struct in6_addr addr6;
+    int nl_fd;
+    struct {
+        struct nlmsghdr  nh;
+        struct ifaddrmsg ifa;
+        char             attrbuf[128];
+    } req;
+    struct rtattr *rta;
+    char nl_buf[8192];
+    ssize_t len;
+    struct nlmsghdr *nh;
+
+    if((ip6_prefix <= 0) || (ip6_prefix > 128))
+        return 0; /* no IPv6 address configured for this edge, nothing to do */
+
+    if(inet_pton(AF_INET6, ip6_addr, &addr6) != 1) {
+        traceEvent(TRACE_ERROR, "tuntap_set_address6: invalid IPv6 address '%s'", ip6_addr);
+        return -1;
+    }
+
+    if((nl_fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) == -1) {
+        traceEvent(TRACE_ERROR, "tuntap_set_address6: netlink socket creation failed [%d]: %s", errno, strerror(errno));
+        return -1;
+    }
+
+    memset(&req, 0, sizeof(req));
+    req.nh.nlmsg_len   = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+    req.nh.nlmsg_type  = RTM_NEWADDR;
+    req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK;
+    req.nh.nlmsg_pid   = getpid();
+    req.ifa.ifa_family    = AF_INET6;
+    req.ifa.ifa_prefixlen = (uint8_t)ip6_prefix;
+    req.ifa.ifa_index     = device->if_idx;
+    req.ifa.ifa_scope     = 0; /* global */
+
+    /* iproute2 sets both IFA_LOCAL and IFA_ADDRESS to the same value for a
+     * plain (non point-to-point) interface address; mirror that here. */
+    rta = (struct rtattr *)(((char *)&req) + NLMSG_ALIGN(req.nh.nlmsg_len));
+    rta->rta_type = IFA_LOCAL;
+    rta->rta_len  = RTA_LENGTH(sizeof(addr6));
+    memcpy(RTA_DATA(rta), &addr6, sizeof(addr6));
+    req.nh.nlmsg_len = NLMSG_ALIGN(req.nh.nlmsg_len) + RTA_LENGTH(sizeof(addr6));
+
+    rta = (struct rtattr *)(((char *)&req) + NLMSG_ALIGN(req.nh.nlmsg_len));
+    rta->rta_type = IFA_ADDRESS;
+    rta->rta_len  = RTA_LENGTH(sizeof(addr6));
+    memcpy(RTA_DATA(rta), &addr6, sizeof(addr6));
+    req.nh.nlmsg_len = NLMSG_ALIGN(req.nh.nlmsg_len) + RTA_LENGTH(sizeof(addr6));
+
+    if(send(nl_fd, &req, req.nh.nlmsg_len, 0) < 0) {
+        traceEvent(TRACE_ERROR, "tuntap_set_address6: netlink send failed [%d]: %s", errno, strerror(errno));
+        close(nl_fd);
+        return -1;
+    }
+
+    len = recv(nl_fd, nl_buf, sizeof(nl_buf), 0);
+    close(nl_fd);
+
+    if(len < 0) {
+        traceEvent(TRACE_ERROR, "tuntap_set_address6: netlink recv failed [%d]: %s", errno, strerror(errno));
+        return -1;
+    }
+
+    for(nh = (struct nlmsghdr *)nl_buf; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+        if(nh->nlmsg_type == NLMSG_ERROR) {
+            struct nlmsgerr *nlerr = NLMSG_DATA(nh);
+
+            if(nlerr->error != 0) {
+                traceEvent(TRACE_ERROR, "tuntap_set_address6: kernel rejected RTM_NEWADDR for %s/%d: %s",
+                           ip6_addr, ip6_prefix, strerror(-nlerr->error));
+                return -1;
+            }
+            traceEvent(TRACE_NORMAL, "assigned IPv6 address %s/%d to %s", ip6_addr, ip6_prefix, device->dev_name);
+            return 0;
+        }
+    }
+
+    traceEvent(TRACE_WARNING, "tuntap_set_address6: no ack received for RTM_NEWADDR on %s/%d", ip6_addr, ip6_prefix);
+    return -1;
 }
 
 
