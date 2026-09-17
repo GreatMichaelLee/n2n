@@ -458,8 +458,12 @@ int process_mgmt (n2n_sn_t *sss,
      * kept only for column parity with the edges table above. */
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                         "IPV6 ROUTES\n");
+    /* Same format string as the data rows below -- typing the header out by
+     * hand with manually-counted spaces was what misaligned it the first
+     * time; reusing the row format guarantees the columns actually agree. */
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                        " ### | SUBNET                        | MAC               | COMMUNITY        | SELECTION | LAST SEEN\n");
+                        " ### | %-30s | %-17s | %-16s | %-9s | %9s\n",
+                        "SUBNET", "MAC", "COMMUNITY", "SELECTION", "LAST SEEN");
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                         "========================================================================================================\n");
     sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);

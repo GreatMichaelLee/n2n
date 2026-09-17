@@ -703,8 +703,13 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                         "===============================================================================================================================\n");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "IPV6 ROUTES\n");
+    /* Same format string as the data rows below (with " ###" hand-added in place
+     * of "%4u", since a bare number can't be a literal header label) -- typing the
+     * header out by hand with manually-counted spaces was what misaligned it the
+     * first time; reusing the row format guarantees the columns actually agree. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        " ### | SUBNET                        | MAC               | SELECTION | LAST SEEN\n");
+                        " ### | %-30s | %-17s | %-9s | %9s\n",
+                        "SUBNET", "MAC", "SELECTION", "LAST SEEN");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "===============================================================================================================================\n");
     sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,

@@ -1368,36 +1368,19 @@ void send_register_super (n2n_edge_t *eee) {
 }
 
 
-/* Periodically (re-)broadcast this edge's advertise_ip6_subnet, if any, to
- * the rest of its community via MSG_TYPE_COMMUNITY_ROUTE_ADV -- see that
- * type's comment. No-op when conf.advertise_ip6 is unset. Re-advertised on
- * the same cadence as REGISTER_SUPER (conf.register_interval) rather than a
- * dedicated timer, since that's already a sensible "is this edge still
- * alive and configured this way" heartbeat and keeps this from needing its
- * own tunable. Purely a broadcast of intent: core never applies this route
- * itself anywhere, on the sending or the receiving edge (see
+/* Shared by both callers of send_route_advertisement() below: encode one
+ * n2n_ip6_subnet_t as a MSG_TYPE_COMMUNITY_ROUTE_ADV and send it to the
+ * current supernode. Purely a broadcast of intent: core never applies this
+ * route itself anywhere, on the sending or the receiving edge (see
  * n2n_learned_route_t / the MSG_TYPE_COMMUNITY_ROUTE_ADV case in the main
  * dispatcher). */
-static void send_route_advertisement (n2n_edge_t *eee, time_t now) {
+static void send_one_route_advertisement (n2n_edge_t *eee, n2n_ip6_subnet_t subnet) {
 
     uint8_t pktbuf[N2N_PKT_BUF_SIZE] = {0};
     size_t idx;
     n2n_common_t cmn;
     n2n_COMMUNITY_ROUTE_ADV_t adv;
     n2n_sock_str_t sockbuf;
-
-    if(!eee->conf.advertise_ip6 || !eee->curr_sn)
-        return;
-
-    if(now < (eee->last_route_adv + eee->conf.register_interval))
-        return;
-
-    if(eee->conf.shared_secret && !eee->dynamic_key_ready)
-        /* see sn_weight_tick()'s identical guard: header_encryption_ctx_dynamic
-         * starts out seeded with a random placeholder key until the real one
-         * arrives via REGISTER_SUPER_ACK; sending before that is undecryptable
-         * by the supernode and would be silently dropped. */
-        return;
 
     memset(&cmn, 0, sizeof(cmn));
     memset(&adv, 0, sizeof(adv));
@@ -1408,7 +1391,7 @@ static void send_route_advertisement (n2n_edge_t *eee, time_t now) {
     memcpy(cmn.community, eee->conf.community_name, N2N_COMMUNITY_SIZE);
 
     memcpy(adv.srcMac, eee->device.mac_addr, N2N_MAC_SIZE);
-    adv.subnet = eee->conf.advertise_ip6_subnet;
+    adv.subnet = subnet;
     adv.withdraw = 0;
 
     idx = 0;
@@ -1423,6 +1406,55 @@ static void send_route_advertisement (n2n_edge_t *eee, time_t now) {
     traceEvent(TRACE_DEBUG, "send COMMUNITY_ROUTE_ADV to [%s]", sock_to_cstr(sockbuf, &(eee->curr_sn->sock)));
 
     sendto_sock(eee, pktbuf, idx, &(eee->curr_sn->sock));
+}
+
+/* Periodically (re-)broadcast this edge's own IPv6 identity to the rest of
+ * its community via MSG_TYPE_COMMUNITY_ROUTE_ADV. Two separate, independent
+ * things get advertised here, both gated on the same timer:
+ *
+ *   1. This edge's own tunnel address, as a /128, whenever one is configured
+ *      (tuntap_priv_conf.ip6_prefix > 0, i.e. --ip6-addr was given) --
+ *      unconditional, no separate opt-in, exactly mirroring how an edge's
+ *      IPv4 tunnel address (dev_addr) is always part of REGISTER_SUPER with
+ *      no equivalent "advertise_ip4" toggle. This is what lets every other
+ *      edge's mgmt-port "routes" table show "who has which IPv6 address",
+ *      the IPv6 equivalent of the IPv4 peer tables' TAP column.
+ *   2. Whatever larger CIDR this edge proxies for the community (exit-node
+ *      egress, a routed subnet behind it), only when conf.advertise_ip6 is
+ *      explicitly set -- this one stays opt-in since, unlike (1), it's a
+ *      routing decision with real implications for whoever applies it.
+ *
+ * Re-advertised on the same cadence as REGISTER_SUPER (conf.register_interval)
+ * rather than a dedicated timer, since that's already a sensible "is this
+ * edge still alive and configured this way" heartbeat and keeps this from
+ * needing its own tunable. */
+static void send_route_advertisement (n2n_edge_t *eee, time_t now) {
+
+    if(!eee->curr_sn)
+        return;
+
+    if(now < (eee->last_route_adv + eee->conf.register_interval))
+        return;
+
+    if(eee->conf.shared_secret && !eee->dynamic_key_ready)
+        /* see sn_weight_tick()'s identical guard: header_encryption_ctx_dynamic
+         * starts out seeded with a random placeholder key until the real one
+         * arrives via REGISTER_SUPER_ACK; sending before that is undecryptable
+         * by the supernode and would be silently dropped. */
+        return;
+
+    if(eee->tuntap_priv_conf.ip6_prefix > 0) {
+        n2n_ip6_subnet_t self_addr;
+
+        memset(&self_addr, 0, sizeof(self_addr));
+        if(inet_pton(AF_INET6, eee->tuntap_priv_conf.ip6_addr, self_addr.net_addr) == 1) {
+            self_addr.net_bitlen = 128;
+            send_one_route_advertisement(eee, self_addr);
+        }
+    }
+
+    if(eee->conf.advertise_ip6)
+        send_one_route_advertisement(eee, eee->conf.advertise_ip6_subnet);
 
     eee->last_route_adv = now;
 }
@@ -1776,9 +1808,6 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
         if((decode_common(&cmn, base, &rem, &idx) >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
             decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
             sn_weight_record_probe_ack(eee, peer, &ack);
-
-            traceEvent(TRACE_NORMAL, "DEBUGPROBE-TCP ack.version[0]=%d ack.version='%s' peer->version(before)='%s'",
-                       (int)(unsigned char)ack.version[0], ack.version, peer->version);
 
             /* Same fix as the UDP-dispatched MSG_TYPE_SN_PROBE_ACK case -- this
              * standby-TCP path is a second, entirely separate place a PROBE_ACK
@@ -3457,9 +3486,6 @@ void process_udp (n2n_edge_t *eee, const struct sockaddr *sender_sock, const SOC
 
                 if(sn) {
                     sn_weight_record_probe_ack(eee, sn, &ack);
-
-                    traceEvent(TRACE_NORMAL, "DEBUG probe-ack version dump: ack.version[0]=%d ack.version='%s' sn->version(before)='%s'",
-                               (int)(unsigned char)ack.version[0], ack.version, sn->version);
 
                     /* The wire format has always carried the supernode's version
                      * string here (see encode_SN_PROBE/decode_SN_PROBE) -- the
