@@ -1777,6 +1777,9 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
             decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
             sn_weight_record_probe_ack(eee, peer, &ack);
 
+            traceEvent(TRACE_NORMAL, "DEBUGPROBE-TCP ack.version[0]=%d ack.version='%s' peer->version(before)='%s'",
+                       (int)(unsigned char)ack.version[0], ack.version, peer->version);
+
             /* Same fix as the UDP-dispatched MSG_TYPE_SN_PROBE_ACK case -- this
              * standby-TCP path is a second, entirely separate place a PROBE_ACK
              * (and thus a supernode's current version) can arrive from, so it
@@ -3454,6 +3457,9 @@ void process_udp (n2n_edge_t *eee, const struct sockaddr *sender_sock, const SOC
 
                 if(sn) {
                     sn_weight_record_probe_ack(eee, sn, &ack);
+
+                    traceEvent(TRACE_NORMAL, "DEBUG probe-ack version dump: ack.version[0]=%d ack.version='%s' sn->version(before)='%s'",
+                               (int)(unsigned char)ack.version[0], ack.version, sn->version);
 
                     /* The wire format has always carried the supernode's version
                      * string here (see encode_SN_PROBE/decode_SN_PROBE) -- the
