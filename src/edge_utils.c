@@ -1341,6 +1341,7 @@ void send_register_super (n2n_edge_t *eee) {
     reg.dev_addr.net_addr = ntohl(eee->device.ip_addr);
     reg.dev_addr.net_bitlen = mask2bitlen(ntohl(eee->device.device_mask));
     memcpy(reg.dev_desc, eee->conf.dev_desc, N2N_DESC_SIZE);
+    reg.start_time = (uint32_t)eee->start_time;
     get_local_auth(eee, &(reg.auth));
 
     idx = 0;
@@ -3176,6 +3177,26 @@ void process_udp (n2n_edge_t *eee, const struct sockaddr *sender_sock, const SOC
 
                 check_peer_registration_needed(eee, from_supernode, via_multicast,
                                                reg.srcMac, reg.cookie, &reg.dev_addr, (const n2n_desc_t*)&reg.dev_desc, orig_sender);
+
+                /* Deliberately a separate, standalone lookup rather than threading
+                 * reg.start_time through check_peer_registration_needed() and its own
+                 * callees (register_with_new_peer()/check_known_peer_sock_change()) --
+                 * this keeps the change out of that already-intricate, proven peer
+                 * lifecycle machinery entirely. reg.start_time is the same field
+                 * sn_broadcast_edge_hints() fills in when a supernode proactively
+                 * re-broadcasts this exact message type to give every edge visibility
+                 * into every other edge's uptime (see its comment and
+                 * n2n_REGISTER_t.start_time) -- 0 means "unknown", never overwrite an
+                 * already-known value with that. */
+                if(reg.start_time) {
+                    struct peer_info *hinted_peer;
+
+                    HASH_FIND_PEER(eee->known_peers, reg.srcMac, hinted_peer);
+                    if(!hinted_peer)
+                        HASH_FIND_PEER(eee->pending_peers, reg.srcMac, hinted_peer);
+                    if(hinted_peer)
+                        hinted_peer->sn_start_time = (time_t)reg.start_time;
+                }
                 break;
             }
 

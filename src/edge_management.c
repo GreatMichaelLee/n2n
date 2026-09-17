@@ -627,11 +627,17 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         ++num_pending_peers;
         net = htonl(peer->dev_addr.net_addr);
         snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
+        /* peer->sn_start_time: that *edge's* own start time, learned via a supernode's
+         * proactive MSG_TYPE_REGISTER hint broadcast (sn_broadcast_edge_hints(), which
+         * now fills in start_time the same way it already does dev_desc) -- n2n has no
+         * edge-to-edge mechanism for this at all, so it's entirely dependent on the
+         * supernode relaying it. 0 means never received one yet. Absolute-timestamp
+         * display, not a duration -- see n2n_typedefs.h's sn_start_time comment for why
+         * that matters (SUPERNODES table below hit real drift from doing it the other
+         * way). */
+        if(peer->sn_start_time)
+            strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&peer->sn_start_time));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            /* trailing "| %10s" is a blank field with no data behind it (this
-                             * table has no real per-peer uptime concept) purely so the row's
-                             * right edge reaches the same column as the shared header's
-                             * "UPTIME" above, instead of ending short and ragged. */
                             "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
                             ++num,
                             (peer->dev_addr.net_addr == 0) ? "" : inet_ntoa(*(struct in_addr *) &net),
@@ -639,7 +645,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                             sock_to_cstr(sockbuf, &(peer->sock)),
                             peer->dev_desc,
                             (peer->last_seen) ? time_buf : "",
-                            "");
+                            peer->sn_start_time ? uptime_buf : "");
 
         sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
                &req.sender_sock, req.sock_len);
@@ -656,8 +662,10 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         ++num_known_peers;
         net = htonl(peer->dev_addr.net_addr);
         snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
+        /* see the matching comment in the SUPERNODE FORWARD block above */
+        if(peer->sn_start_time)
+            strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&peer->sn_start_time));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            /* see the matching comment in the SUPERNODE FORWARD block above */
                             "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
                             ++num,
                             (peer->dev_addr.net_addr == 0) ? "" : inet_ntoa(*(struct in_addr *) &net),
@@ -665,7 +673,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                             sock_to_cstr(sockbuf, &(peer->sock)),
                             peer->dev_desc,
                             (peer->last_seen) ? time_buf : "",
-                            "");
+                            peer->sn_start_time ? uptime_buf : "");
 
         sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
                &req.sender_sock, req.sock_len);

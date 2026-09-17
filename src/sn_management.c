@@ -514,14 +514,131 @@ int process_mgmt (n2n_sn_t *sss,
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                         "========================================================================================================\n");
 
-    /* Stage A IPv6 support: a second table, appended below the one above,
-     * listing every IPv6 CIDR any edge in any community has advertised via
-     * MSG_TYPE_COMMUNITY_ROUTE_ADV (cached in comm->routes as this supernode
-     * relays them -- see sn_utils.c). SUBNET's width matches TAP's above so
-     * MAC starts at the same column in both tables. HINT is the advertising
-     * edge's own dev_desc if it's directly registered with this supernode
-     * (looked up in the same community's ->edges), "N/A" otherwise -- there
-     * is no IPv6-specific supernode selection (stays IPv4-only, see the
+    /* User request 2026-09-17: this supernode's own edges table above only
+     * shows edges registered directly with it -- an edge registered with a
+     * federation peer supernode never appears here at all, even though this
+     * supernode does learn *of* it (comm->assoc, populated for free as a
+     * side effect of ordinary cross-site traffic/relay -- see sn_utils.c's
+     * MSG_TYPE_COMMUNITY_ROUTE_ADV handling for another consumer of the same
+     * data). Surfacing it means querying any one supernode in the federation
+     * can show the whole fleet's edges, not just the ones attached to it.
+     * Placed directly after the local-edges table above (not after IPV6
+     * ROUTES) since both are fundamentally "which edges exist" -- IPv4
+     * local/remote belong next to each other, IPv6 is a separate concern.
+     *
+     * Reuses the exact same row format string as the local-edges table
+     * above (not just matching widths by hand) so the two are guaranteed to
+     * stay column-aligned: TAP has no equivalent here (no per-row "-"), so
+     * it's blank; EDGE's slot carries COMMUNITY instead, since which
+     * supernode an edge is behind is now the *section* header rather than a
+     * per-row value (see below); PROTO has no meaning here either.
+     *
+     * A federation can have more than 2 supernodes, so edges attached
+     * elsewhere can be split across more than one *other* supernode -- one
+     * flat table with a per-row "VIA SUPERNODE" column doesn't make that
+     * obvious at a glance. Instead: a separate sub-table per distinct remote
+     * supernode actually seen, each headed by that supernode's own address
+     * (there's no friendlier name available for one we never registered
+     * with ourselves). HINT is the edge's own dev_desc if this supernode
+     * happened to learn it (only available via the REGISTER_SUPER-triggered
+     * caller of update_node_supernode_association(), not the PEER_INFO one
+     * -- see its comment), "N/A" otherwise. */
+    {
+        node_supernode_association_t *assoc, *tmp_assoc;
+        n2n_sock_str_t remote_sns[16];
+        int num_remote_sns = 0;
+        int i;
+        uint32_t num_remote_total = 0;
+
+        HASH_ITER(hh, sss->communities, community, tmp) {
+            HASH_ITER(hh, community->assoc, assoc, tmp_assoc) {
+                n2n_sock_t via_sn;
+                n2n_sock_str_t via_str;
+
+                num_remote_total++;
+                fill_n2nsock(&via_sn, &(assoc->sock));
+                sock_to_cstr(via_str, &via_sn);
+
+                for(i = 0; i < num_remote_sns; i++) {
+                    if(0 == strcmp(remote_sns[i], via_str))
+                        break;
+                }
+                if((i == num_remote_sns) && (num_remote_sns < 16)) {
+                    strncpy(remote_sns[num_remote_sns], via_str, sizeof(n2n_sock_str_t));
+                    num_remote_sns++;
+                }
+            }
+        }
+
+        if(num_remote_total == 0) {
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                "REMOTE EDGES (VIA FEDERATION)\n");
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                "(none known yet)\n");
+            sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+            ressize = 0;
+        }
+
+        for(i = 0; i < num_remote_sns; i++) {
+            uint32_t num_this_sn = 0;
+            const char *hint;
+
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                "REMOTE EDGES VIA SUPERNODE %s\n", remote_sns[i]);
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                " ### | %-19s | %-17s | %-21s %-3s | %-15s | %9s\n",
+                                "TAP", "MAC", "COMMUNITY", "", "HINT", "LAST SEEN");
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                "========================================================================================================\n");
+            sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+            ressize = 0;
+
+            HASH_ITER(hh, sss->communities, community, tmp) {
+                HASH_ITER(hh, community->assoc, assoc, tmp_assoc) {
+                    n2n_sock_t via_sn;
+                    n2n_sock_str_t via_str;
+
+                    fill_n2nsock(&via_sn, &(assoc->sock));
+                    sock_to_cstr(via_str, &via_sn);
+                    if(0 != strcmp(via_str, remote_sns[i]))
+                        continue;
+
+                    sprintf(time_buf, "%8us", (unsigned int)(now - assoc->last_seen));
+                    hint = (const char *)assoc->dev_desc;
+
+                    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                        "%4u | %-19s | %-17s | %-21s %-3s | %-15s | %9s\n",
+                                        ++num_this_sn,
+                                        "",
+                                        macaddr_str(mac_buf, assoc->mac),
+                                        (community->is_federation) ? "-/-" : community->community,
+                                        "",
+                                        (hint && hint[0]) ? hint : "N/A",
+                                        time_buf);
+
+                    sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+                    ressize = 0;
+                }
+            }
+
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                "========================================================================================================\n");
+            sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+            ressize = 0;
+        }
+    }
+
+    /* Stage A IPv6 support: appended after both edges tables above (local
+     * and remote) rather than between them -- IPv4 local/remote are the
+     * same kind of thing and belong adjacent to each other; IPv6 routing is
+     * a separate concern. Lists every IPv6 CIDR any edge in any community
+     * has advertised via MSG_TYPE_COMMUNITY_ROUTE_ADV (cached in
+     * comm->routes as this supernode relays them -- see sn_utils.c).
+     * SUBNET's width matches TAP's above so MAC starts at the same column
+     * in every table on this console. HINT is the advertising edge's own
+     * dev_desc if it's directly registered with this supernode (looked up
+     * in the same community's ->edges), "N/A" otherwise -- there is no
+     * IPv6-specific supernode selection (stays IPv4-only, see the
      * SN_SELECTION_STRATEGY_WEIGHT work), so that column was dropped
      * entirely rather than kept around always reading "N/A". */
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
@@ -570,60 +687,6 @@ int process_mgmt (n2n_sn_t *sss,
 
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                         "===============================================================================================\n");
-
-    /* User request 2026-09-17: this supernode's own "edges" table above only
-     * shows edges registered directly with it -- an edge registered with a
-     * federation peer supernode never appears here at all, even though this
-     * supernode does learn *of* it (comm->assoc, populated for free as a
-     * side effect of ordinary cross-site traffic/relay -- see sn_utils.c's
-     * MSG_TYPE_COMMUNITY_ROUTE_ADV handling for another consumer of the same
-     * data). Surfacing it means querying any one supernode in the federation
-     * can show the whole fleet's edges, not just the ones attached to it. */
-    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                        "REMOTE EDGES (VIA FEDERATION)\n");
-    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                        " ### | %-17s | %-21s | %-16s | %9s\n",
-                        "MAC", "VIA SUPERNODE", "COMMUNITY", "LAST SEEN");
-    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                        "===============================================================================\n");
-    sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
-    ressize = 0;
-
-    {
-        node_supernode_association_t *assoc, *tmp_assoc;
-        uint32_t num_remote = 0;
-
-        HASH_ITER(hh, sss->communities, community, tmp) {
-            HASH_ITER(hh, community->assoc, assoc, tmp_assoc) {
-                n2n_sock_t via_sn;
-
-                sprintf(time_buf, "%8us", (unsigned int)(now - assoc->last_seen));
-                /* see mgmt_remote_edges()'s comment on why this conversion is needed */
-                fill_n2nsock(&via_sn, &(assoc->sock));
-
-                ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                                    "%4u | %-17s | %-21s | %-16s | %9s\n",
-                                    ++num_remote,
-                                    macaddr_str(mac_buf, assoc->mac),
-                                    sock_to_cstr(sockbuf, &via_sn),
-                                    (community->is_federation) ? "-/-" : community->community,
-                                    time_buf);
-
-                sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
-                ressize = 0;
-            }
-        }
-
-        if(num_remote == 0) {
-            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                                "(none known yet)\n");
-            sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
-            ressize = 0;
-        }
-    }
-
-    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                        "===============================================================================\n");
 
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                         "uptime %lu | ", (now - sss->start_time));

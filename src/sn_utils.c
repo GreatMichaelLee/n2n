@@ -923,7 +923,7 @@ void sn_term (n2n_sn_t *sss) {
 
 void update_node_supernode_association (struct sn_community *comm,
                                         n2n_mac_t *edgeMac, const struct sockaddr *sender_sock, socklen_t sock_size,
-                                        time_t now) {
+                                        time_t now, const n2n_desc_t *dev_desc) {
 
     node_supernode_association_t *assoc;
 
@@ -945,6 +945,12 @@ void update_node_supernode_association (struct sn_community *comm,
      * table on top of this data. */
     memcpy(&(assoc->sock), sender_sock, sock_size);
     assoc->sock_len = sock_size;
+    /* Only the REGISTER_SUPER-triggered caller actually has a dev_desc to
+     * offer (NULL from the PEER_INFO-triggered one) -- never blank out a
+     * dev_desc we already learned just because this particular sighting
+     * didn't carry one. */
+    if(dev_desc)
+        memcpy(&(assoc->dev_desc), dev_desc, sizeof(n2n_desc_t));
     assoc->last_seen = now;
 }
 
@@ -1193,6 +1199,14 @@ static int update_edge (n2n_sn_t *sss,
 
     if((scan != NULL) && (ret != update_edge_auth_fail)) {
         scan->last_seen = now;
+        /* Every REGISTER_SUPER carries this (see n2n_REGISTER_SUPER_t.start_time),
+         * not just the first one -- update unconditionally rather than only in the
+         * "Not known"/creation branch above, so an edge that reconnects with a new
+         * process (and thus a genuinely new start_time) doesn't get stuck showing
+         * its old one forever. 0 (never set / older peer) is a legitimate value to
+         * carry through here; sn_broadcast_edge_hints() and the mgmt console both
+         * already treat 0 as "unknown, don't display". */
+        scan->sn_start_time = reg->start_time;
     }
 
     return ret;
@@ -2165,7 +2179,7 @@ static int process_udp (n2n_sn_t * sss,
                 } else {
                     // this is an edge with valid authentication registering with another supernode, so ...
                     // 1- ... associate it with that other supernode
-                    update_node_supernode_association(comm, &(reg.edgeMac), sender_sock, sock_size, now);
+                    update_node_supernode_association(comm, &(reg.edgeMac), sender_sock, sock_size, now, &(reg.dev_desc));
                     // 2- ... we can delete it from regular list if present (can happen)
                     HASH_FIND_PEER(comm->edges, reg.edgeMac, peer);
                     if(peer != NULL) {
@@ -2604,7 +2618,7 @@ static int process_udp (n2n_sn_t * sss,
             if(peer != NULL) {
                 if((comm->is_federation == IS_NO_FEDERATION) && (!is_null_mac(pi.srcMac))) {
                     // snoop on the information to use for supernode forwarding (do not wait until first remote REGISTER_SUPER)
-                    update_node_supernode_association(comm, &(pi.mac), sender_sock, sock_size, now);
+                    update_node_supernode_association(comm, &(pi.mac), sender_sock, sock_size, now, NULL);
 
                     // this is a PEER_INFO for one of the edges conencted to this supernode, forward,
                     // i.e. re-assemble (memcpy of udpbuf to encbuf could be sufficient as well)
@@ -2798,6 +2812,7 @@ static void sn_broadcast_edge_hints (n2n_sn_t *sss, time_t now) {
                 reg.dev_addr.net_addr = src->dev_addr.net_addr;
                 reg.dev_addr.net_bitlen = src->dev_addr.net_bitlen;
                 memcpy(reg.dev_desc, src->dev_desc, N2N_DESC_SIZE);
+                reg.start_time = (uint32_t)src->sn_start_time;
 
                 encode_REGISTER(pktbuf, &idx, &cmn, &reg);
 
@@ -2846,6 +2861,7 @@ static void sn_broadcast_edge_hints (n2n_sn_t *sss, time_t now) {
                 reg.dev_addr.net_addr = src->dev_addr.net_addr;
                 reg.dev_addr.net_bitlen = src->dev_addr.net_bitlen;
                 memcpy(reg.dev_desc, src->dev_desc, N2N_DESC_SIZE);
+                reg.start_time = (uint32_t)src->sn_start_time;
 
                 encode_REGISTER(pktbuf, &idx, &cmn, &reg);
 

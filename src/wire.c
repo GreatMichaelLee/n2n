@@ -396,6 +396,7 @@ int encode_REGISTER (uint8_t *base,
     retval += encode_uint32(base, idx, reg->dev_addr.net_addr);
     retval += encode_uint8(base, idx, reg->dev_addr.net_bitlen);
     retval += encode_buf(base, idx, reg->dev_desc, N2N_DESC_SIZE);
+    retval += encode_uint32(base, idx, reg->start_time);
 
     return retval;
 }
@@ -419,6 +420,7 @@ int decode_REGISTER (n2n_REGISTER_t *reg,
     retval += decode_uint32(&(reg->dev_addr.net_addr), base, rem, idx);
     retval += decode_uint8(&(reg->dev_addr.net_bitlen), base, rem, idx);
     retval += decode_buf(reg->dev_desc, N2N_DESC_SIZE, base, rem, idx);
+    retval += decode_uint32(&(reg->start_time), base, rem, idx);
 
     return retval;
 }
@@ -444,6 +446,7 @@ int encode_REGISTER_SUPER (uint8_t *base,
     retval += encode_uint16(base, idx, reg->auth.token_size);
     retval += encode_buf(base, idx, reg->auth.token, reg->auth.token_size);
     retval += encode_uint32(base, idx, reg->key_time);
+    retval += encode_uint32(base, idx, reg->start_time);
 
     return retval;
 }
@@ -475,6 +478,7 @@ int decode_REGISTER_SUPER (n2n_REGISTER_SUPER_t *reg,
     }
     retval += decode_buf(reg->auth.token, reg->auth.token_size, base, rem, idx);
     retval += decode_uint32(&(reg->key_time), base, rem, idx);
+    retval += decode_uint32(&(reg->start_time), base, rem, idx);
 
     return retval;
 }

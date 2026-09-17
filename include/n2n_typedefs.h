@@ -428,6 +428,10 @@ typedef struct n2n_REGISTER {
     n2n_sock_t         sock;        /**< Supernode's view of edge socket OR edge's preferred local socket */
     n2n_ip_subnet_t    dev_addr;    /**< IP address of the tuntap adapter. */
     n2n_desc_t         dev_desc;    /**< Hint description correlated with the edge */
+    uint32_t           start_time;  /**< srcMac's own process start time (that edge's clock, absolute), carried
+                                     * through unchanged whenever a supernode uses this same message type to
+                                     * proactively re-broadcast an edge's hint to its peers (sn_broadcast_edge_hints())
+                                     * -- 0 if unknown. */
 } n2n_REGISTER_t;
 
 typedef struct n2n_REGISTER_ACK {
@@ -454,6 +458,10 @@ typedef struct n2n_REGISTER_SUPER {
     n2n_desc_t         dev_desc;    /**< Hint description correlated with the edge */
     n2n_auth_t         auth;        /**< Authentication scheme and tokens */
     uint32_t           key_time;    /**< key time for dynamic key, used between federatred supernodes only */
+    uint32_t           start_time;  /**< this edge's own process start time (its clock, absolute) -- lets its
+                                     * supernode learn/re-broadcast the edge's uptime the same way weight-mode
+                                     * SN_PROBE_ACK already does for supernodes-as-seen-by-edges. 0 means
+                                     * "not provided" (older/other builds on this same fork). */
 } n2n_REGISTER_SUPER_t;
 
 
@@ -580,17 +588,23 @@ struct peer_info {
     uint8_t                          local;
     time_t                           uptime;
     n2n_version_t                    version;
-    time_t                           sn_start_time; /* only set for SN_SELECTION_STRATEGY_WEIGHT supernode entries, from
-                                                     * SN_PROBE_ACK's sn_start_time -- an absolute timestamp on the
-                                                     * *supernode's* clock, stored verbatim (not run through a
-                                                     * duration-since-last-probe roundtrip like `uptime` above): that
-                                                     * roundtrip made the console's displayed start time visibly drift
-                                                     * by however many seconds had elapsed since the last successful
-                                                     * probe, snapping back only when a fresh one arrived -- confirmed
-                                                     * live, the same supernode's displayed start time changed on
-                                                     * every single console query. This field never changes once set
-                                                     * (as long as that supernode process doesn't actually restart),
-                                                     * so displaying it directly is jitter-free by construction. */
+    time_t                           sn_start_time; /* Absolute-clock process start time, stored verbatim (not run
+                                                     * through a duration-since-last-update roundtrip like `uptime`
+                                                     * above): that kind of roundtrip made a displayed start time
+                                                     * visibly drift by however many seconds had elapsed since the
+                                                     * last update, snapping back only when a fresh one arrived --
+                                                     * confirmed live for the supernode case below. Displaying it
+                                                     * directly is jitter-free by construction. Two unrelated uses
+                                                     * share this one field, on different kinds of peer_info entry:
+                                                     *   - supernode entries (SN_SELECTION_STRATEGY_WEIGHT only):
+                                                     *     the *supernode's* clock, from SN_PROBE_ACK's sn_start_time.
+                                                     *   - edge/peer entries: that *edge's* own clock, learned via
+                                                     *     REGISTER_SUPER's start_time field (an edge telling its own
+                                                     *     supernode about itself) and then re-broadcast to other
+                                                     *     edges via sn_broadcast_edge_hints()'s reuse of MSG_TYPE_REGISTER
+                                                     *     (see n2n_REGISTER_t.start_time) -- lets the TAP table's
+                                                     *     UPTIME column show something for peer edges, which n2n
+                                                     *     otherwise has no edge-to-edge mechanism for at all. */
     sn_weight_state_t                *weight_state; /* lazily allocated, only used for supernode entries under SN_SELECTION_STRATEGY_WEIGHT */
 
     UT_hash_handle     hh; /* makes this structure hashable */
@@ -959,6 +973,12 @@ typedef struct node_supernode_association {
         struct sockaddr_storage sas;        /* the actual memory for it, sockaddr can be too small */
     };
     time_t                      last_seen;  /* time mark to keep track of purging requirements */
+    n2n_desc_t                  dev_desc;   /* the edge's own dev_desc, if we happened to learn it (only
+                                             * available via the REGISTER_SUPER-triggered caller of
+                                             * update_node_supernode_association(), not the PEER_INFO one --
+                                             * empty string if never learned. Exposed on the mgmt port's
+                                             * REMOTE EDGES table so a remote edge shows up by name, not
+                                             * just a bare MAC. */
 
     UT_hash_handle hh;                      /* makes this structure hashable */
 } node_supernode_association_t;
