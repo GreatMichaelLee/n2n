@@ -111,8 +111,14 @@ void close_tcp_connection (n2n_sn_t *sss, n2n_tcp_connection_t *conn) {
     struct sn_community *comm, *tmp_comm;
     struct peer_info *edge, *tmp_edge;
 
-    if(!conn)
-        return;
+    if(!conn || conn->inactive)
+        return; /* already shut down and closed once -- calling shutdown()/closesocket() again
+                 * on the same (by now possibly reused-by-the-OS) fd is at best a wasted no-op
+                 * and at worst operates on a completely unrelated fd. Several call sites can
+                 * legitimately reach the same still-in-the-hash connection more than once
+                 * (e.g. a "close everything, something's wrong" sweep after this same
+                 * connection was already closed and re-added moments earlier); this guard
+                 * makes every one of them safe to call repeatedly. */
 
     // find peer by file descriptor
     HASH_ITER(hh, sss->communities, comm, tmp_comm) {
@@ -2941,8 +2947,29 @@ int run_sn_loop (n2n_sn_t *sss) {
                 // this is no real timeout, something went wrong with one of the tcp connections (probably)
                 // close them all, edges will re-open if they detect closure
                 traceEvent(TRACE_DEBUG, "falsly claimed timeout, assuming issue with tcp connection, closing them all");
-                HASH_ITER(hh, sss->tcp_connections, conn, tmp_conn)
+                /* close_tcp_connection() only shuts the socket down and marks the connection
+                 * inactive -- actually removing it from sss->tcp_connections is a separate
+                 * step, normally the dedicated cleanup pass a little further up (inside the
+                 * rc>0 branch, which this else is the opposite of). If we don't also do that
+                 * removal right here, the very next loop iteration's fd_set still includes
+                 * this now-closed fd (the fd_set is rebuilt from sss->tcp_connections
+                 * unconditionally at the top of the loop, ignoring the inactive flag),
+                 * select() fails on the stale fd with the exact same "false timeout" this
+                 * branch is already handling, and we land right back here -- forever. This
+                 * was a real, confirmed-live deadlock: select()/shutdown()/close() each
+                 * failing in lockstep tens of thousands of times within a couple of seconds,
+                 * pinning a CPU core and leaving the supernode process completely unresponsive
+                 * (all the while still technically "running") until manually killed. Triggered
+                 * by an ordinary reload_communities: closing a TCP-connected edge's connection
+                 * from that code path lands here (mgmt socket handling runs after this
+                 * iteration's own cleanup pass), so the first "close" was legitimate -- it's
+                 * only the failure to also forget about it that turns one ordinary close into
+                 * a permanent hang. */
+                HASH_ITER(hh, sss->tcp_connections, conn, tmp_conn) {
                     close_tcp_connection(sss, conn);
+                    HASH_DEL(sss->tcp_connections, conn);
+                    free(conn);
+                }
             } else
                 traceEvent(TRACE_DEBUG, "timeout");
         }
