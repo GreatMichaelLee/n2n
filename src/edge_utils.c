@@ -1532,6 +1532,7 @@ static void sn_weight_recompute_metric (n2n_edge_t *eee, sn_weight_state_t *ws) 
     ws->metric = avg_rtt_ms
                + loss_rate * (double)eee->conf.sn_weight_loss
                + jitter_ms * ((double)eee->conf.sn_weight_jitter / 1000.0);
+    ws->metric_seq++;
 }
 
 
@@ -1801,10 +1802,17 @@ static void sn_weight_evaluate_switch (n2n_edge_t *eee, time_t now) {
         if((peer == eee->curr_sn) || !peer->weight_state || !peer->weight_state->sample_count)
             continue;
 
-        if(peer->weight_state->metric < threshold_metric)
-            peer->weight_state->better_streak++;
-        else
-            peer->weight_state->better_streak = 0;
+        if(peer->weight_state->metric_seq != peer->weight_state->last_eval_metric_seq) {
+            /* only advance/reset the streak once per actual new probe result for this
+             * peer, not once per evaluate_switch() tick -- see last_eval_metric_seq's
+             * comment in n2n_typedefs.h. */
+            peer->weight_state->last_eval_metric_seq = peer->weight_state->metric_seq;
+
+            if(peer->weight_state->metric < threshold_metric)
+                peer->weight_state->better_streak++;
+            else
+                peer->weight_state->better_streak = 0;
+        }
 
         if((peer->weight_state->better_streak >= eee->conf.sn_switch_confirm)
            && (!best || (peer->weight_state->metric < best->weight_state->metric)))

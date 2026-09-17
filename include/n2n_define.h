@@ -143,7 +143,9 @@ enum n2n_event_topic {
                                                /* NOT the number of max. TCP connections                    */
 
 /* SN_SELECTION_STRATEGY_WEIGHT defaults, all overridable via edge CLI options */
-#define N2N_SN_PROBE_INTERVAL_DEFAULT      2000    /* ms between probes sent to each known supernode */
+#define N2N_SN_PROBE_INTERVAL_DEFAULT      5000    /* ms between probes sent to each known supernode;
+                                                     * with the default sn_switch_confirm=3, a full
+                                                     * switch confirmation takes 3 * this = 15s */
 #define N2N_SN_PROBE_WINDOW_DEFAULT        20      /* number of probe samples kept per supernode */
 #define N2N_SN_PROBE_TIMEOUT_FACTOR        3       /* a probe is considered lost after this many probe intervals go unanswered */
 #define N2N_SN_WEIGHT_LOSS_DEFAULT         1000    /* ms penalty applied at 100% loss rate */
