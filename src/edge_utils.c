@@ -1801,6 +1801,11 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
             }
         }
 
+        traceEvent(TRACE_NORMAL, "DEBUGWEIGHT gate check use_main_sock=%d outstanding_seq=%u now_us=%llu send_time=%llu delta=%lld interval_us=%llu",
+                   use_main_sock, ws->outstanding_seq,
+                   (unsigned long long)now_us, (unsigned long long)ws->outstanding_send_time,
+                   (long long)(now_us - ws->outstanding_send_time), (unsigned long long)probe_interval_us);
+
         /* an outstanding probe that never got answered counts as a lost sample */
         if(ws->outstanding_seq && ((now_us - ws->outstanding_send_time) > timeout_us)) {
             sn_weight_push_sample(ws, 0, 0);
