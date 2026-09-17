@@ -353,8 +353,18 @@ int process_mgmt (n2n_sn_t *sss,
         return 0; /* no status output afterwards */
     }
 
-    if((mgmt_buf[0] >= 'a' || mgmt_buf[0] <= 'z') && (mgmt_buf[1] == ' ')) {
-        /* this is a JSON request */
+    if((mgmt_buf[0] >= 'a' && mgmt_buf[0] <= 'z') && (mgmt_buf[1] == ' ')) {
+        /* this is a JSON request -- note the &&: '>= a || <= z' (the previous condition
+         * here) is true for every possible byte value (every byte is either >= 'a' or
+         * <= 'z', there's no gap), making it a no-op that left mgmt_buf[1] == ' ' as the
+         * only real gate. A short/empty query (e.g. a bare newline from `echo -e '' | nc`)
+         * only fills mgmt_buf[0], leaving mgmt_buf[1] as whatever was already in the
+         * buffer from a previous request -- if that leftover byte happened to be a space,
+         * the plain-text status dump below was skipped in favor of handleMgmtJson(),
+         * which silently produces no output for a non-JSON payload. Confirmed live: this
+         * intermittently made the whole management port on a live supernode appear to
+         * stop responding to plain-text queries entirely, with nothing in the log to
+         * explain it. edge_management.c's equivalent check already uses &&. */
         handleMgmtJson(&req, mgmt_buf, mgmt_size);
         return 0;
     }

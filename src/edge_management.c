@@ -446,7 +446,10 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     struct peer_info *peer, *tmpPeer;
     macstr_t mac_buf;
     char time_buf[10]; /* 9 digits + 1 terminating zero */
-    char uptime_buf[11]; /* 10 digits + 1 terminating zero */
+    char uptime_buf[20]; /* "YYYY/MM/DD HH:MM:SS" (19 chars) + 1 terminating zero -- only used for
+                          * the SUPERNODES table, which shows this as an absolute calendar
+                          * timestamp (when that specific supernode process started), not a
+                          * duration -- see its computation below. */
     /* dec_ip_bit_str_t ip_bit_str = {'\0'}; */
     /* dec_ip_str_t ip_str = {'\0'}; */
     in_addr_t net;
@@ -608,16 +611,26 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "SUPERNODES\n");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "%-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
-                        "SN VER", "L", "A", "MAC", "EDGE", "SELECTION", "LAST SEEN", "UPTIME");
+                        "%-24s %1s%1s | %-17s | %-21s | %-15s | %6s | %19s\n",
+                        "SN VER", "L", "A", "MAC", "ADDRESS", "SELECTION", "SEEN", "STARTED (SN LOCAL TIME)");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "==================================================================================================================\n");
+                        "========================================================================================================================\n");
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
-        snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
-        snprintf(uptime_buf, sizeof(uptime_buf), "%9us", (unsigned int)(peer->uptime));
+        snprintf(time_buf, sizeof(time_buf), "%5us", (unsigned int)(now - peer->last_seen));
+        if(peer->uptime) {
+            /* peer->uptime holds an elapsed duration (seconds since that supernode's own
+             * process started, same semantic as the legacy PEER_INFO/PONG path already
+             * used it for -- see sn_utils.c's `pi.uptime = now - sss->start_time`), so
+             * recover the absolute start time by subtracting it from our own current
+             * clock, then show *that* as a calendar timestamp -- much more useful at a
+             * glance than a bare duration, and immediately obvious after a supernode
+             * restart (jumps to "just now" instead of silently resetting to "0s"). */
+            time_t started = now - peer->uptime;
+            strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&started));
+        }
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            "%-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                            "%-24s %1s%1s | %-17s | %-21s | %-15s | %6s | %19s\n",
                             peer->version,
                             (peer->purgeable) ? "" : "l",
                             (peer == eee->curr_sn) ? (eee->sn_wait ? "." : "*" ) : "",
