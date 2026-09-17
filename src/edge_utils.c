@@ -1622,6 +1622,9 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
                      ws->probe_tcp_expected - ws->probe_tcp_position, 0,
                      (struct sockaddr*)&sas, &ss_size);
 
+    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT probe_tcp_read called sock=%d bread=%ld errno=%d expected=%u position=%u",
+               ws->probe_tcp_sock, (long)bread, errno, ws->probe_tcp_expected, ws->probe_tcp_position);
+
     if(bread <= 0) {
         if((bread < 0) && ((errno == EAGAIN) || (errno == EWOULDBLOCK)))
             return; /* spurious wakeup */
@@ -1871,9 +1874,13 @@ static void sn_weight_service_read_fds (n2n_edge_t *eee, fd_set *socket_mask) {
         return;
 
     HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
-        if(peer->weight_state && (peer->weight_state->probe_tcp_sock >= 0)
-           && FD_ISSET(peer->weight_state->probe_tcp_sock, socket_mask))
-            sn_weight_service_probe_tcp_read(eee, peer);
+        if(peer->weight_state && (peer->weight_state->probe_tcp_sock >= 0)) {
+            int is_set = FD_ISSET(peer->weight_state->probe_tcp_sock, socket_mask);
+            if(is_set)
+                traceEvent(TRACE_NORMAL, "DEBUGWEIGHT service_read_fds sock=%d is_set=%d", peer->weight_state->probe_tcp_sock, is_set);
+            if(is_set)
+                sn_weight_service_probe_tcp_read(eee, peer);
+        }
     }
 }
 
