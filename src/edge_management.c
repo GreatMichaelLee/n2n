@@ -693,6 +693,55 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         msg_len = 0;
     }
 
+    // Stage A IPv6 support: a further table, appended below SUPERNODES, listing
+    // eee->learned_routes -- the same data mgmt_routes() exposes over JSON (the
+    // "routes" command), just also rendered here for the bare-<enter> plain-text
+    // console. There is no IPv6-specific supernode selection (that stays
+    // IPv4-only -- see the SN_SELECTION_STRATEGY_WEIGHT work), so SELECTION is
+    // always "N/A", kept only for column parity with the SUPERNODES table above.
+    msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                        "===============================================================================================================================\n");
+    msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                        "IPV6 ROUTES\n");
+    msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                        " ### | SUBNET                        | MAC               | SELECTION | LAST SEEN\n");
+    msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                        "===============================================================================================================================\n");
+    sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
+           &req.sender_sock, req.sock_len);
+    msg_len = 0;
+
+    {
+        n2n_learned_route_t *route, *tmpRoute;
+        ip6str_t subnet_buf;
+        uint32_t num_routes = 0;
+
+        HASH_ITER(hh, eee->learned_routes, route, tmpRoute) {
+            inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
+            snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - route->last_seen));
+
+            msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                                "%4u | %-30s | %-17s | %-9s | %9s\n",
+                                ++num_routes,
+                                subnet_buf,
+                                macaddr_str(mac_buf, route->srcMac),
+                                "N/A",
+                                time_buf);
+
+            sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
+                   &req.sender_sock, req.sock_len);
+            msg_len = 0;
+        }
+
+        if(num_routes == 0) {
+            msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                                "(none learned yet)\n");
+            sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
+                   &req.sender_sock, req.sock_len);
+            msg_len = 0;
+        }
+    }
+
     // further stats
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "===============================================================================================================================\n");

@@ -895,6 +895,13 @@ void sn_term (n2n_sn_t *sss) {
             HASH_DEL(community->assoc, assoc);
             free(assoc);
         }
+        {
+            n2n_learned_route_t *route, *tmp_route;
+            HASH_ITER(hh, community->routes, route, tmp_route) {
+                HASH_DEL(community->routes, route);
+                free(route);
+            }
+        }
         HASH_DEL(sss->communities, community);
         free(community);
     }
@@ -2652,6 +2659,41 @@ static int process_udp (n2n_sn_t * sss,
                        macaddr_str(mac_buf, adv.srcMac),
                        (from_supernode ? "from sn" : "local"),
                        (adv.withdraw ? "withdraw" : "advertise"));
+
+            /* Cache into comm->routes for the mgmt port (both federation hops and
+             * locally-originated ones update this same cache; harmless either way
+             * since it's keyed on srcMac+subnet, not on which hop we're on). Purely
+             * a read-only mirror of edge_utils.c's identical eee->learned_routes
+             * handling -- this supernode still never applies any of it itself. */
+            {
+                n2n_learned_route_t *route, *tmp_route, *found = NULL;
+
+                HASH_ITER(hh, comm->routes, route, tmp_route) {
+                    if((memcmp(route->srcMac, adv.srcMac, N2N_MAC_SIZE) == 0) &&
+                       (memcmp(route->subnet.net_addr, adv.subnet.net_addr, IPV6_SIZE) == 0) &&
+                       (route->subnet.net_bitlen == adv.subnet.net_bitlen)) {
+                        found = route;
+                        break;
+                    }
+                }
+
+                if(adv.withdraw) {
+                    if(found) {
+                        HASH_DEL(comm->routes, found);
+                        free(found);
+                    }
+                } else if(found) {
+                    found->last_seen = now;
+                } else {
+                    route = (n2n_learned_route_t *)calloc(1, sizeof(n2n_learned_route_t));
+                    if(route) {
+                        memcpy(route->srcMac, adv.srcMac, N2N_MAC_SIZE);
+                        route->subnet = adv.subnet;
+                        route->last_seen = now;
+                        HASH_ADD(hh, comm->routes, srcMac, sizeof(n2n_mac_t), route);
+                    }
+                }
+            }
 
             if(!from_supernode) {
                 memcpy(&cmn2, &cmn, sizeof(n2n_common_t));

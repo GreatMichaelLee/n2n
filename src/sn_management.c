@@ -38,6 +38,7 @@
 #ifdef _WIN32
 #include "win32/defs.h"
 #else
+#include <arpa/inet.h>   // for inet_ntop
 #include <sys/socket.h>  // for sendto, socklen_t
 #endif
 
@@ -194,6 +195,44 @@ static void mgmt_edges (mgmt_req_t *req, strbuf_t *buf) {
     }
 }
 
+/* Stage A IPv6 support: read-only view of every community's ->routes, cached
+ * in sn_utils.c's MSG_TYPE_COMMUNITY_ROUTE_ADV handling as it relays these
+ * advertisements between edges. Mirrors edge_management.c's mgmt_routes(),
+ * plus a "community" field since a supernode spans more than one. As with
+ * the edge side, this supernode never applies any of it -- purely a mirror
+ * for whichever platform integration layer wants to poll it. */
+static void mgmt_routes (mgmt_req_t *req, strbuf_t *buf) {
+    size_t msg_len;
+    struct sn_community *community, *tmp;
+    n2n_learned_route_t *route, *tmpRoute;
+    macstr_t mac_buf;
+    ip6str_t subnet_buf;
+
+    HASH_ITER(hh, req->sss->communities, community, tmp) {
+        HASH_ITER(hh, community->routes, route, tmpRoute) {
+
+            inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
+
+            msg_len = snprintf(buf->str, buf->size,
+                               "{"
+                               "\"_tag\":\"%s\","
+                               "\"_type\":\"row\","
+                               "\"community\":\"%s\","
+                               "\"macaddr\":\"%s\","
+                               "\"subnet\":\"%s/%u\","
+                               "\"last_seen\":%li}\n",
+                               req->tag,
+                               (community->is_federation) ? "-/-" : community->community,
+                               macaddr_str(mac_buf, route->srcMac),
+                               subnet_buf,
+                               route->subnet.net_bitlen,
+                               route->last_seen);
+
+            send_reply(req, buf, msg_len);
+        }
+    }
+}
+
 // Forward define so we can include this in the mgmt_handlers[] table
 static void mgmt_help (mgmt_req_t *req, strbuf_t *buf);
 
@@ -205,6 +244,7 @@ static const mgmt_handler_t mgmt_handlers[] = {
     { .cmd = "reload_communities", .flags = FLAG_WROK, .help = "Reloads communities and user's public keys", .func = mgmt_reload_communities},
     { .cmd = "communities", .help = "List current communities", .func = mgmt_communities},
     { .cmd = "edges", .help = "List current edges/peers", .func = mgmt_edges},
+    { .cmd = "routes", .help = "List learned IPv6 community routes", .func = mgmt_routes},
     { .cmd = "timestamps", .help = "Event timestamps", .func = mgmt_timestamps},
     { .cmd = "packetstats", .help = "Traffic statistics", .func = mgmt_packetstats},
     { .cmd = "help", .flags = FLAG_WROK, .help = "Show JSON commands", .func = mgmt_help},
@@ -406,6 +446,57 @@ int process_mgmt (n2n_sn_t *sss,
             ressize = 0;
         }
     }
+    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                        "========================================================================================================\n");
+
+    /* Stage A IPv6 support: a second table, appended below the one above,
+     * listing every IPv6 CIDR any edge in any community has advertised via
+     * MSG_TYPE_COMMUNITY_ROUTE_ADV (cached in comm->routes as this supernode
+     * relays them -- see sn_utils.c). This supernode has no notion of
+     * IPv6-specific supernode selection (that stays IPv4-only, see the
+     * SN_SELECTION_STRATEGY_WEIGHT work), so SELECTION is always "N/A" here,
+     * kept only for column parity with the edges table above. */
+    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                        "IPV6 ROUTES\n");
+    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                        " ### | SUBNET                        | MAC               | COMMUNITY        | SELECTION | LAST SEEN\n");
+    ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                        "========================================================================================================\n");
+    sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+    ressize = 0;
+
+    {
+        n2n_learned_route_t *route, *tmpRoute;
+        ip6str_t subnet_buf;
+        uint32_t num_routes = 0;
+
+        HASH_ITER(hh, sss->communities, community, tmp) {
+            HASH_ITER(hh, community->routes, route, tmpRoute) {
+                inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
+                sprintf(time_buf, "%8us", (unsigned int)(now - route->last_seen));
+
+                ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                    "%4u | %-30s | %-17s | %-16s | %-9s | %9s\n",
+                                    ++num_routes,
+                                    subnet_buf,
+                                    macaddr_str(mac_buf, route->srcMac),
+                                    (community->is_federation) ? "-/-" : community->community,
+                                    "N/A",
+                                    time_buf);
+
+                sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+                ressize = 0;
+            }
+        }
+
+        if(num_routes == 0) {
+            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                "(none learned yet)\n");
+            sendto_mgmt(sss, sender_sock, sock_size, (const uint8_t *) resbuf, ressize);
+            ressize = 0;
+        }
+    }
+
     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                         "========================================================================================================\n");
 

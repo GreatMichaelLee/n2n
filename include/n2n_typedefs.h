@@ -987,6 +987,7 @@ struct sn_community {
     sn_user_t                     *allowed_users;         /* list of allowed users */
     int64_t                       number_enc_packets;     /* Number of encrypted packets handled so far, required for sorting from time to time */
     n2n_ip_subnet_t               auto_ip_net;            /* Address range of auto ip address service. */
+    n2n_learned_route_t           *routes;                /* IPv6 CIDRs edges in this community have advertised via MSG_TYPE_COMMUNITY_ROUTE_ADV, cached read-only for the mgmt port -- this supernode never applies them to anything, see sn_utils.c's handling of that message type. */
 
     UT_hash_handle hh;                                    /* makes this structure hashable */
 };
