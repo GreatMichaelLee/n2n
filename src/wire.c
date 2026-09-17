@@ -520,6 +520,41 @@ int decode_UNREGISTER_SUPER (n2n_UNREGISTER_SUPER_t *unreg,
 }
 
 
+int encode_COMMUNITY_ROUTE_ADV (uint8_t *base,
+                                size_t *idx,
+                                const n2n_common_t *common,
+                                const n2n_COMMUNITY_ROUTE_ADV_t *adv) {
+
+    int retval = 0;
+
+    retval += encode_common(base, idx, common);
+    retval += encode_mac(base, idx, adv->srcMac);
+    retval += encode_buf(base, idx, adv->subnet.net_addr, IPV6_SIZE);
+    retval += encode_uint8(base, idx, adv->subnet.net_bitlen);
+    retval += encode_uint8(base, idx, adv->withdraw);
+
+    return retval;
+}
+
+
+int decode_COMMUNITY_ROUTE_ADV (n2n_COMMUNITY_ROUTE_ADV_t *adv,
+                                const n2n_common_t *cmn, /* info on how to interpret it */
+                                const uint8_t *base,
+                                size_t *rem,
+                                size_t *idx) {
+
+    size_t retval = 0;
+    memset(adv, 0, sizeof(n2n_COMMUNITY_ROUTE_ADV_t));
+
+    retval += decode_mac(adv->srcMac, base, rem, idx);
+    retval += decode_buf(adv->subnet.net_addr, IPV6_SIZE, base, rem, idx);
+    retval += decode_uint8(&(adv->subnet.net_bitlen), base, rem, idx);
+    retval += decode_uint8(&(adv->withdraw), base, rem, idx);
+
+    return retval;
+}
+
+
 int encode_REGISTER_ACK (uint8_t *base,
                          size_t *idx,
                          const n2n_common_t *common,

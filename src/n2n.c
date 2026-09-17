@@ -583,6 +583,7 @@ char* msg_type2str (uint16_t msg_type) {
         case MSG_TYPE_REGISTER_SUPER_ACK: return("MSG_TYPE_REGISTER_SUPER_ACK");
         case MSG_TYPE_REGISTER_SUPER_NAK: return("MSG_TYPE_REGISTER_SUPER_NAK");
         case MSG_TYPE_FEDERATION: return("MSG_TYPE_FEDERATION");
+        case MSG_TYPE_COMMUNITY_ROUTE_ADV: return("MSG_TYPE_COMMUNITY_ROUTE_ADV");
         default: return("???");
     }
 

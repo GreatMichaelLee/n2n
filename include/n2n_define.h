@@ -34,7 +34,8 @@
 #define MSG_TYPE_RE_REGISTER_SUPER          12
 #define MSG_TYPE_SN_PROBE                   13
 #define MSG_TYPE_SN_PROBE_ACK               14
-#define MSG_TYPE_MAX_TYPE                   14
+#define MSG_TYPE_COMMUNITY_ROUTE_ADV        15
+#define MSG_TYPE_MAX_TYPE                   15
 
 /* Max available space to add supernodes' informations (sockets and MACs) in REGISTER_SUPER_ACK
  * Field sizes of REGISTER_SUPER_ACK as used in encode/decode fucntions in src/wire.c

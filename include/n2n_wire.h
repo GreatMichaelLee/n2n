@@ -162,6 +162,17 @@ int decode_UNREGISTER_SUPER (n2n_UNREGISTER_SUPER_t *unreg,
                              size_t *rem,
                              size_t *idx);
 
+int encode_COMMUNITY_ROUTE_ADV (uint8_t *base,
+                                size_t *idx,
+                                const n2n_common_t *common,
+                                const n2n_COMMUNITY_ROUTE_ADV_t *adv);
+
+int decode_COMMUNITY_ROUTE_ADV (n2n_COMMUNITY_ROUTE_ADV_t *adv,
+                                const n2n_common_t *cmn, /* info on how to interpret it */
+                                const uint8_t *base,
+                                size_t *rem,
+                                size_t *idx);
+
 int encode_REGISTER_ACK (uint8_t * base,
                          size_t * idx,
                          const n2n_common_t * common,

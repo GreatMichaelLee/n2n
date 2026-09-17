@@ -223,6 +223,11 @@ typedef struct filter_rule {
 
 /** Common type used to hold stringified IP addresses. */
 typedef char ipstr_t[INET_ADDRSTRLEN];
+#ifdef INET6_ADDRSTRLEN
+typedef char ip6str_t[INET6_ADDRSTRLEN];
+#else /* Windows headers may not expose it under all target versions */
+typedef char ip6str_t[46];
+#endif
 
 /** Common type used to hold stringified MAC addresses. */
 #define N2N_MACSTR_SIZE 32
@@ -364,6 +369,18 @@ typedef struct n2n_ip_subnet {
     uint8_t         net_bitlen;     /* Subnet prefix. */
 } n2n_ip_subnet_t;
 
+/* IPv6 counterpart of n2n_ip_subnet_t. Kept as a separate, additive type
+ * rather than folded into n2n_ip_subnet_t (which is wire-format-fixed at
+ * uint32_t and already embedded, unchanged, in REGISTER/REGISTER_SUPER/
+ * REGISTER_SUPER_ACK) -- see n2n_COMMUNITY_ROUTE_ADV_t below for the only
+ * wire message that carries this. Address is kept in network byte order
+ * (unlike n2n_ip_subnet_t's host-order uint32_t) since there is no single
+ * host-order representation for a 128-bit value. */
+typedef struct n2n_ip6_subnet {
+    uint8_t         net_addr[IPV6_SIZE]; /* Network order IPv6 address. */
+    uint8_t         net_bitlen;          /* Subnet prefix, 0-128; 0 denotes a default route (::/0). */
+} n2n_ip6_subnet_t;
+
 typedef struct n2n_sock {
     uint8_t         family;           /* AF_INET, AF_INET6 or AF_INVALID (-1, a custom #define);
                                          mind that AF_UNSPEC (0) means auto IPv4 or IPv6 */
@@ -483,6 +500,24 @@ typedef struct n2n_UNREGISTER_SUPER {
     n2n_auth_t     auth;
     n2n_mac_t      srcMac;
 } n2n_UNREGISTER_SUPER_t;
+
+
+/* MSG_TYPE_COMMUNITY_ROUTE_ADV: an edge broadcasts an IPv6 CIDR it proxies
+ * (e.g. its own LAN segment, or ::/0 to offer itself as an IPv6 exit node)
+ * to the rest of its community. The supernode only relays this via
+ * try_broadcast(), exactly like a multicast PACKET -- it never inspects or
+ * acts on the route itself. Receiving edges cache these locally and expose
+ * them read-only over the JSON management port; nothing in core ever
+ * applies the route to the OS routing table or a NAT/firewall rule -- that
+ * decision and its mechanism belong entirely to whichever platform
+ * integration layer is consuming the management port (OpenWrt: n2n.init;
+ * a future Windows/Android/iOS client: its own native code). See
+ * n2n_learned_route_t for the local cache this feeds. */
+typedef struct n2n_COMMUNITY_ROUTE_ADV {
+    n2n_mac_t           srcMac;    /**< MAC of the edge advertising this route (it is the gateway for it) */
+    n2n_ip6_subnet_t    subnet;    /**< the CIDR being advertised; net_bitlen==0 means a default route */
+    uint8_t             withdraw;  /**< 0 = advertise/refresh, 1 = this edge stopped proxying the route */
+} n2n_COMMUNITY_ROUTE_ADV_t;
 
 
 typedef struct n2n_PEER_INFO {
@@ -668,6 +703,17 @@ typedef struct n2n_tuntap_priv_config {
     uid_t           userid;
     gid_t           groupid;
 #endif
+    /* Static IPv6 tunnel address, Stage A of the IPv6 feature (see
+     * n2n_COMMUNITY_ROUTE_ADV_t for the route-advertisement half). Only
+     * 'static' assignment is supported -- ip6_prefix==0 means "no IPv6
+     * address configured", matching how ip_mode/ip_addr default to unset.
+     * Applying this to the TAP device is platform-specific: only
+     * tuntap_linux.c currently implements it (see tuntap_set_address6()
+     * in n2n.h), guarded at every call site by #ifdef __linux__ so builds
+     * for the other tuntap_*.c platforms are unaffected until they grow
+     * their own implementation. */
+    ip6str_t        ip6_addr;
+    int             ip6_prefix;      /* 0 = unset/disabled, else 1-128 */
 } n2n_tuntap_priv_config_t;
 
 /* *************************************************** */
@@ -722,6 +768,21 @@ typedef struct n2n_resolve_ip_sock {
 
     UT_hash_handle hh;                /* makes this structure hashable */
 } n2n_resolve_ip_sock_t;
+
+
+/* An edge's local cache of MSG_TYPE_COMMUNITY_ROUTE_ADV routes learned from
+ * other edges in the community (see n2n_COMMUNITY_ROUTE_ADV_t). Purely a
+ * local record for the JSON management port to expose read-only -- nothing
+ * in core consumes this to alter routing/forwarding behavior. Keyed on
+ * (srcMac, subnet) so the same gateway can advertise more than one CIDR and
+ * so a withdrawal names exactly which entry to remove. */
+typedef struct n2n_learned_route {
+    n2n_mac_t           srcMac;    /* gateway edge for this route */
+    n2n_ip6_subnet_t    subnet;
+    time_t              last_seen; /* refreshed on every re-advertisement; management port can age these out */
+
+    UT_hash_handle hh;             /* makes this structure hashable */
+} n2n_learned_route_t;
 
 
 // structure to hold resolver thread's parameters
@@ -787,6 +848,20 @@ typedef struct n2n_edge_conf {
     uint32_t                 sn_weight_jitter;       /**< jitter weight in milli-units, 1000 == coefficient 1.0. */
     uint16_t                 sn_switch_threshold;    /**< percent: candidate must beat current by at least this much. */
     uint16_t                 sn_switch_confirm;      /**< consecutive probe windows candidate must stay ahead before switching. */
+
+    /* MSG_TYPE_COMMUNITY_ROUTE_ADV: the CIDR (if any) this edge advertises as
+     * a gateway for, broadcast periodically to the community. Separate from
+     * tuntap_priv_conf.ip6_addr/ip6_prefix (this edge's own tunnel address) --
+     * an edge can have a tunnel address without advertising any route, or
+     * (less commonly) advertise a route for a LAN segment it bridges without
+     * itself needing IPv6 on the tunnel. advertise_ip6_bitlen==0 means
+     * "not advertising anything" (unset), matching ip6_prefix's convention;
+     * an actual default-route advertisement (::/0) is encoded the same way
+     * n2n_ip6_subnet_t always encodes one -- net_bitlen==0 there -- so this
+     * field alone cannot distinguish "unset" from "::/0 configured"; edge.c's
+     * CLI parsing therefore also sets advertise_ip6 (below) to tell them apart. */
+    uint8_t                  advertise_ip6;           /**< 0 = not advertising any route, 1 = advertising advertise_ip6_subnet */
+    n2n_ip6_subnet_t         advertise_ip6_subnet;    /**< the CIDR to advertise when advertise_ip6 is set */
 } n2n_edge_conf_t;
 
 
@@ -860,6 +935,9 @@ struct n2n_edge {
     n2n_tuntap_priv_config_t         tuntap_priv_conf;                   /**< Tuntap config */
 
     network_traffic_filter_t         *network_traffic_filter;
+
+    n2n_learned_route_t               *learned_routes;                   /**< Routes learned from other edges' MSG_TYPE_COMMUNITY_ROUTE_ADV broadcasts, exposed read-only over the mgmt port. */
+    time_t                            last_route_adv;                    /**< Last time this edge (re-)broadcast its own advertise_ip6_subnet, if any. */
 };
 
 typedef struct sn_stats {
