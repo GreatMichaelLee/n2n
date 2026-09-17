@@ -1661,9 +1661,25 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
         size_t idx = 0;
         uint8_t *base = ws->probe_tcp_buf + sizeof(uint16_t);
 
-        if((decode_common(&cmn, base, &rem, &idx) >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
-            decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
-            sn_weight_record_probe_ack(eee, peer, &ack);
+        {
+            int dc_ret;
+
+            memset(&cmn, 0, sizeof(cmn));
+            dc_ret = decode_common(&cmn, base, &rem, &idx);
+
+            {
+                char hexbuf[128];
+                size_t hi, hn = (ws->probe_tcp_position < 40) ? ws->probe_tcp_position : 40;
+                for(hi = 0; hi < hn; hi++)
+                    snprintf(hexbuf + hi*2, 3, "%02x", ws->probe_tcp_buf[hi]);
+                traceEvent(TRACE_NORMAL, "DEBUGWEIGHT full frame decode_common_ret=%d cmn.pc=%u expected_pc=%u rem_after=%zu idx_after=%zu raw_hex=%s",
+                           dc_ret, cmn.pc, MSG_TYPE_SN_PROBE_ACK, rem, idx, hexbuf);
+            }
+
+            if((dc_ret >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
+                decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
+                sn_weight_record_probe_ack(eee, peer, &ack);
+            }
         }
     }
 
