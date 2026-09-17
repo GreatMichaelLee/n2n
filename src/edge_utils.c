@@ -3641,8 +3641,19 @@ int run_edge_loop (n2n_edge_t *eee) {
             struct peer_info *reannounce_peer, *reannounce_tmp;
             HASH_ITER(hh, eee->known_peers, reannounce_peer, reannounce_tmp)
                 send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
-            HASH_ITER(hh, eee->pending_peers, reannounce_peer, reannounce_tmp)
+            HASH_ITER(hh, eee->pending_peers, reannounce_peer, reannounce_tmp) {
                 send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
+                /* also retry via the supernode-forwarded path, exactly like the initial
+                 * registration burst in register_with_new_peer() does: a peer stuck in
+                 * pending_peers is precisely one whose direct path never confirmed (e.g.
+                 * HK's ISP throttles/blocks general UDP on that WAN), so a direct-only
+                 * retry can never succeed there -- the forwarded copy travels over
+                 * whatever transport already reliably reaches the supernode (TCP for
+                 * -S2 edges) and lets the supernode relay it onward over its own,
+                 * unaffected connection to the destination peer. */
+                if(eee->curr_sn)
+                    send_register(eee, &(eee->curr_sn->sock), reannounce_peer->mac_addr, N2N_FORWARDED_REG_COOKIE);
+            }
             last_p2p_reannounce = now;
         }
 
