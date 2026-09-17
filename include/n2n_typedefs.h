@@ -316,6 +316,12 @@ typedef struct sn_weight_state {
     uint32_t        next_seq;           /* next probe sequence number to send */
     uint32_t        outstanding_seq;    /* seq of the probe currently awaiting a reply, 0 if none in flight */
     uint64_t        outstanding_send_time; /* microsecond send_time of the outstanding probe */
+    uint64_t        next_probe_due_us;  /* jittered (+/-20%) schedule target for the next probe send, re-randomized
+                                          * every send so a fixed probe cadence can never alias with some external
+                                          * periodic failure (e.g. a flaky link that happens to glitch on a cycle
+                                          * that lines up with a perfectly regular probe interval, always sampled
+                                          * during its "good" phase) -- 0 initially, so the first probe fires
+                                          * immediately without waiting on this field. */
     double          rfc3550_jitter;     /* running RFC3550-style jitter estimate, in microseconds */
     uint32_t        prev_rtt_usec;      /* previous completed sample's rtt, for jitter delta calc */
     uint8_t         prev_rtt_valid;     /* whether prev_rtt_usec holds a real value yet */

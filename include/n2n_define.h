@@ -147,6 +147,13 @@ enum n2n_event_topic {
 #define N2N_SN_SWITCH_THRESHOLD_DEFAULT    20      /* percent: candidate must beat current metric by at least this much */
 #define N2N_SN_SWITCH_CONFIRM_DEFAULT      3       /* number of consecutive probe windows a candidate must stay ahead before switching */
 #define N2N_SN_PROBE_RECONNECT_BACKOFF     5000    /* ms, minimum time between reconnect attempts for a dead TCP probe connection */
+#define N2N_SN_BOOTSTRAP_WINDOW_SECS       60      /* sec since edge start: switch-threshold is forced to 0% (any consistent
+                                                     * advantage counts, still gated by sn_switch_confirm) so the very first
+                                                     * supernode pick -- which is arbitrary config order, not measurement,
+                                                     * see edge_init()'s eee->curr_sn = eee->conf.supernodes -- gets corrected
+                                                     * by real data quickly, instead of potentially never clearing the
+                                                     * (deliberately conservative) steady-state threshold against a candidate
+                                                     * that is only modestly, but consistently, better. */
 
 #define N2N_CLOSE_SOCKET_COUNTER_MAX 15        /* number of times of edge's reconnects to supernode after   */
                                                /* which the socket explicitly is closed before reopening    */

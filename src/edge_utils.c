@@ -1729,23 +1729,53 @@ static void sn_weight_send_probe (n2n_edge_t *eee, peer_info_t *peer, sn_weight_
 
     ws->outstanding_seq = probe.seq;
     ws->outstanding_send_time = now_us;
+
+    /* schedule the next probe with +/-20% jitter around the configured interval, freshly
+     * randomized on every send (not a single fixed phase offset) -- see next_probe_due_us's
+     * comment in n2n_typedefs.h for why: a perfectly regular cadence can alias with some
+     * external periodic failure and never observe its bad phase. */
+    {
+        uint64_t base_us = (uint64_t)eee->conf.sn_probe_interval * 1000ULL;
+        uint64_t span_us = base_us / 5;
+        uint64_t jitter_us = span_us ? (n2n_rand() % (2 * span_us + 1)) : 0;
+
+        ws->next_probe_due_us = now_us + (base_us - span_us) + jitter_us;
+    }
 }
 
 
 /* relative-threshold + consecutive-confirm hysteresis: a candidate must beat the current
  * supernode's metric by at least --switch-threshold percent, and keep doing so for
- * --switch-confirm consecutive evaluations, before we actually switch to it. */
+ * --switch-confirm consecutive evaluations, before we actually switch to it.
+ *
+ * During the first N2N_SN_BOOTSTRAP_WINDOW_SECS of the edge's own life, the threshold is
+ * forced to 0% instead of the configured value (switch-confirm still applies unchanged).
+ * eee->curr_sn's very first value (edge_init(): eee->curr_sn = eee->conf.supernodes) is
+ * simply the first -l argument in config order -- not a measurement of any kind, since no
+ * probe can even be sent before that first registration completes and hands back the real
+ * dynamic key. Left to the normal steady-state threshold, a candidate that is consistently
+ * but only modestly better (say, a stable few-percent edge) than this arbitrary pick would
+ * never clear the bar and get stuck there indefinitely -- the bootstrap window gives real
+ * measurements a one-time chance to correct that arbitrary starting point quickly, then
+ * gets out of the way for the deliberately conservative anti-flap behaviour everyone
+ * actually wants day to day. Re-arms on every edge process restart (start_time is reset by
+ * edge_init() every time), which is correct: each restart re-runs the same arbitrary first
+ * pick, so it deserves the same one-time correction chance. */
 static void sn_weight_evaluate_switch (n2n_edge_t *eee, time_t now) {
 
     peer_info_t *peer, *tmp, *best = NULL;
     sn_weight_state_t *cur_ws;
     double threshold_metric;
+    uint16_t effective_threshold;
 
     if(!eee->curr_sn || !eee->curr_sn->weight_state || !eee->curr_sn->weight_state->sample_count)
         return; /* no data yet on the current supernode, nothing to compare against */
 
+    effective_threshold = ((now - eee->start_time) < N2N_SN_BOOTSTRAP_WINDOW_SECS)
+                         ? 0 : eee->conf.sn_switch_threshold;
+
     cur_ws = eee->curr_sn->weight_state;
-    threshold_metric = cur_ws->metric * (1.0 - ((double)eee->conf.sn_switch_threshold / 100.0));
+    threshold_metric = cur_ws->metric * (1.0 - ((double)effective_threshold / 100.0));
 
     HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
         if((peer == eee->curr_sn) || !peer->weight_state || !peer->weight_state->sample_count)
@@ -1839,7 +1869,7 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
             ws->outstanding_seq = 0;
         }
 
-        if(!ws->outstanding_seq && ((now_us - ws->outstanding_send_time) >= probe_interval_us))
+        if(!ws->outstanding_seq && (now_us >= ws->next_probe_due_us))
             sn_weight_send_probe(eee, peer, ws, use_main_sock, now_us);
     }
 
