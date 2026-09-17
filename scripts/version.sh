@@ -16,9 +16,34 @@ TOPDIR=$(dirname "$0")/..
 
 VER_FILE_SHORT=$(cat "${TOPDIR}/VERSION")
 
-if [ -d "$TOPDIR/.git" ]; then
-    # If there is a .git directory in our TOPDIR, then this is assumed to be
-    # real git checkout
+if [ -n "$N2N_VERSION_DATE" ] && [ -n "$N2N_VERSION_HASH" ]; then
+    # OpenWrt's PKG_SOURCE_PROTO:=git download step (git clone + git archive
+    # into a tarball) strips .git from the extracted PKG_BUILD_DIR, so the
+    # "real" branch below never actually runs for any OpenWrt cross-compile
+    # -- every such build silently fell back to the bare-VERSION-file branch
+    # at the bottom instead, with no date/hash at all, for the whole
+    # lifetime of this fork. The packages Makefile now sets PKG_SOURCE_DATE
+    # next to PKG_SOURCE_VERSION whenever it bumps the latter (both come
+    # from this same repo's `git log`/`git rev-parse` at edit time) and
+    # passes them in through these two env vars from its Build/Configure
+    # step, reproducing exactly what the git-checkout branch below would
+    # have computed if .git had survived.
+    VER_SHORT="$VER_FILE_SHORT"
+    VER_HASH="$N2N_VERSION_HASH"
+    DATE="$N2N_VERSION_DATE"
+    VER="${VER_FILE_SHORT}-${N2N_VERSION_DATE}-g${N2N_VERSION_HASH}"
+elif (cd "$TOPDIR" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+    # `-d "$TOPDIR/.git"` used to gate this branch, but a git *worktree*
+    # (e.g. `git worktree add`, the standard way this fork's feature
+    # branches get built/tested -- see feat/ipv6-stage-a's own dev flow)
+    # has a .git *file* (a "gitdir: ..." pointer), not a directory, so that
+    # check silently failed for every worktree checkout and fell all the
+    # way through to the bare-VERSION-file branch below -- the exact "just
+    # 3.1.1, no date/hash" symptom this whole rework exists to fix, and it
+    # was happening even in plain native builds, not just OpenWrt's
+    # .git-stripping git-archive download (see the env-var branch above).
+    # `git rev-parse --is-inside-work-tree` correctly recognizes both a
+    # regular checkout and a worktree.
 
     cd "$TOPDIR" || exit 1
 
