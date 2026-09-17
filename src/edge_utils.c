@@ -1558,19 +1558,19 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     if(ack->version[0])
         memcpy(peer->version, ack->version, sizeof(n2n_version_t));
 
-    /* peer->last_seen/uptime already exist and are already what the management console
-     * displays -- under --select-mac/--select-rtt they're set from REGISTER_SUPER_ACK,
-     * which weight mode only ever gets from its one active supernode, leaving both
-     * permanently blank for every entry including the active one (last_seen/uptime
-     * aren't otherwise touched by the weight probe path at all). A PROBE_ACK is received
-     * from every configured supernode continuously regardless of active/standby status,
-     * so use it to keep both genuinely populated: last_seen as "when we last actually
-     * heard from this specific supernode", uptime recomputed fresh against our own
-     * clock each time (ack->sn_start_time is the supernode's absolute process start
-     * time, not a pre-computed duration, so this doesn't go stale between probes). */
+    /* peer->last_seen already exists and is already what the management console
+     * displays -- under --select-mac/--select-rtt it's set from REGISTER_SUPER_ACK,
+     * which weight mode only ever gets from its one active supernode, leaving it
+     * permanently blank for every entry including the active one. A PROBE_ACK is
+     * received from every configured supernode continuously regardless of
+     * active/standby status, so use it to keep last_seen genuinely populated: "when
+     * we last actually heard from this specific supernode". sn_start_time is stored
+     * verbatim (see its comment in n2n_typedefs.h for why: NOT run through a
+     * duration roundtrip against our own clock, which visibly drifted between
+     * probes). */
     peer->last_seen = time(NULL);
     if(ack->sn_start_time)
-        peer->uptime = time(NULL) - (time_t)ack->sn_start_time;
+        peer->sn_start_time = (time_t)ack->sn_start_time;
 
     traceEvent(TRACE_DEBUG, "SN_SELECTION_STRATEGY_WEIGHT: probe rtt=%uus for supernode [%s], metric now %.1fms",
                rtt_usec, sock_to_cstr(sockbuf, &peer->sock), ws->metric);

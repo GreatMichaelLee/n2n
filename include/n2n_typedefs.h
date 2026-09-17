@@ -545,6 +545,17 @@ struct peer_info {
     uint8_t                          local;
     time_t                           uptime;
     n2n_version_t                    version;
+    time_t                           sn_start_time; /* only set for SN_SELECTION_STRATEGY_WEIGHT supernode entries, from
+                                                     * SN_PROBE_ACK's sn_start_time -- an absolute timestamp on the
+                                                     * *supernode's* clock, stored verbatim (not run through a
+                                                     * duration-since-last-probe roundtrip like `uptime` above): that
+                                                     * roundtrip made the console's displayed start time visibly drift
+                                                     * by however many seconds had elapsed since the last successful
+                                                     * probe, snapping back only when a fresh one arrived -- confirmed
+                                                     * live, the same supernode's displayed start time changed on
+                                                     * every single console query. This field never changes once set
+                                                     * (as long as that supernode process doesn't actually restart),
+                                                     * so displaying it directly is jitter-free by construction. */
     sn_weight_state_t                *weight_state; /* lazily allocated, only used for supernode entries under SN_SELECTION_STRATEGY_WEIGHT */
 
     UT_hash_handle     hh; /* makes this structure hashable */

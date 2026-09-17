@@ -625,14 +625,20 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
         snprintf(time_buf, sizeof(time_buf), "%5us", (unsigned int)(now - peer->last_seen));
-        if(peer->uptime) {
-            /* peer->uptime holds an elapsed duration (seconds since that supernode's own
-             * process started, same semantic as the legacy PEER_INFO/PONG path already
-             * used it for -- see sn_utils.c's `pi.uptime = now - sss->start_time`), so
-             * recover the absolute start time by subtracting it from our own current
-             * clock, then show *that* as a calendar timestamp -- much more useful at a
-             * glance than a bare duration, and immediately obvious after a supernode
-             * restart (jumps to "just now" instead of silently resetting to "0s"). */
+        if(peer->sn_start_time) {
+            /* weight mode: an absolute timestamp on the supernode's own clock, stored
+             * verbatim every probe -- see its comment in n2n_typedefs.h. Display it
+             * directly; no arithmetic against our own clock here, which is exactly what
+             * made this drift by however many seconds had elapsed since the last probe,
+             * confirmed live (the same supernode's displayed start time changed on
+             * every single console query). */
+            strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&peer->sn_start_time));
+        } else if(peer->uptime) {
+            /* legacy --select-rtt path: peer->uptime is a duration as of the last
+             * PEER_INFO/PONG (see sn_utils.c's `pi.uptime = now - sss->start_time`), so
+             * recover the absolute start time by subtracting it from our current clock.
+             * This one *can* drift a little between PONGs, same as it always could --
+             * not touched here, only weight mode's now-fixed version above is new. */
             time_t started = now - peer->uptime;
             strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&started));
         }
@@ -645,7 +651,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                             sock_to_cstr(sockbuf, &(peer->sock)),
                             sn_selection_criterion_str(eee, sel_buf, peer),
                             (peer->last_seen) ? time_buf : "",
-                            (peer->uptime) ? uptime_buf : "");
+                            (peer->sn_start_time || peer->uptime) ? uptime_buf : "");
 
         sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
                &req.sender_sock, req.sock_len);
