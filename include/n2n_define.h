@@ -48,6 +48,10 @@
 #define PURGE_REGISTRATION_FREQUENCY     30
 #define RE_REG_AND_PURGE_FREQUENCY       10
 #define REGISTRATION_TIMEOUT             60
+#define N2N_P2P_REANNOUNCE_INTERVAL      30  /* re-send REGISTER to already-confirmed p2p
+                                               * peers at this cadence, so an occasional
+                                               * one-off REGISTER lost in transit doesn't
+                                               * leave dev_addr/dev_desc permanently unknown */
 
 #define SOCKET_TIMEOUT_INTERVAL_SECS     10
 #define REGISTER_SUPER_INTERVAL_DFL      20 /* sec, usually UDP NAT entries in a firewall expire after 30 seconds */

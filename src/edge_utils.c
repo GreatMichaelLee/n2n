@@ -1031,8 +1031,17 @@ static void check_known_peer_sock_change (n2n_edge_t *eee,
         } else {
             /* Don't worry about what the supernode reports, it could be seeing a different socket. */
         }
-    } else
+    } else {
+        /* Socket unchanged -- still apply any freshly-arrived dev_addr/dev_desc
+         * (e.g. a REGISTER that finally got through after earlier ones were lost
+         * in transit). Previously this branch only touched last_seen, silently
+         * discarding real data on the assumption nothing needed updating. */
         scan->last_seen = when;
+        if(dev_addr != NULL)
+            memcpy(&(scan->dev_addr), dev_addr, sizeof(n2n_ip_subnet_t));
+        if(dev_desc != NULL)
+            memcpy(scan->dev_desc, dev_desc, N2N_DESC_SIZE);
+    }
 }
 
 /* ************************************** */
@@ -3452,6 +3461,7 @@ int run_edge_loop (n2n_edge_t *eee) {
     time_t lastTransop = 0;
     time_t last_purge_known = 0;
     time_t last_purge_pending = 0;
+    time_t last_p2p_reannounce = 0;
 #ifdef HAVE_BRIDGING_SUPPORT
     time_t last_purge_host = 0;
 #endif
@@ -3603,6 +3613,23 @@ int run_edge_loop (n2n_edge_t *eee) {
                        numPurged,
                        HASH_COUNT(eee->pending_peers),
                        HASH_COUNT(eee->known_peers));
+        }
+
+        /* Periodically re-send our own REGISTER to already p2p-confirmed peers.
+         * REGISTER is the only carrier for dev_addr/dev_desc, and once a peer is
+         * p2p-confirmed nothing re-sends it again -- if that one-off REGISTER got
+         * lost in transit (observed live: consistently one-directional loss), the
+         * peer's TAP/HINT columns in the management console stay blank forever,
+         * since purge_expired_nodes never fires while real traffic keeps refreshing
+         * last_seen. This is deliberately unconditional -- run identically on every
+         * edge, an occasional lost REGISTER self-heals within a retry or two,
+         * without either side needing to detect its own gap (which it can't: the
+         * missing data lives on the *other* end). */
+        if(now > last_p2p_reannounce + N2N_P2P_REANNOUNCE_INTERVAL) {
+            struct peer_info *reannounce_peer, *reannounce_tmp;
+            HASH_ITER(hh, eee->known_peers, reannounce_peer, reannounce_tmp)
+                send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
+            last_p2p_reannounce = now;
         }
 
 #ifdef HAVE_BRIDGING_SUPPORT
