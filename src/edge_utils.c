@@ -1776,6 +1776,15 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
         if((decode_common(&cmn, base, &rem, &idx) >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
             decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
             sn_weight_record_probe_ack(eee, peer, &ack);
+
+            /* Same fix as the UDP-dispatched MSG_TYPE_SN_PROBE_ACK case -- this
+             * standby-TCP path is a second, entirely separate place a PROBE_ACK
+             * (and thus a supernode's current version) can arrive from, so it
+             * needs the same peer->version update or it stays stale/blank for
+             * any supernode currently being monitored as a standby over TCP
+             * rather than as the active UDP-registered one. */
+            if(ack.version[0])
+                memcpy(peer->version, ack.version, sizeof(n2n_version_t));
         }
     }
 
