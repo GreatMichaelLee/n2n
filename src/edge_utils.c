@@ -3443,8 +3443,22 @@ void process_udp (n2n_edge_t *eee, const struct sockaddr *sender_sock, const SOC
                     }
                 }
 
-                if(sn)
+                if(sn) {
                     sn_weight_record_probe_ack(eee, sn, &ack);
+
+                    /* The wire format has always carried the supernode's version
+                     * string here (see encode_SN_PROBE/decode_SN_PROBE) -- the
+                     * classic PONG handler above copies it into peer->version,
+                     * but this handler never did, so any edge running in weight
+                     * mode (this whole fleet, see sn_weight_evaluate_switch())
+                     * only ever showed whatever peer->version happened to be
+                     * left over from a legacy PING/PONG exchange, if any ever
+                     * happened at all -- typically stale or blank, confirmed
+                     * live 2026-09-17 against a supernode that had just been
+                     * restarted with a new binary. */
+                    if(ack.version[0])
+                        memcpy(sn->version, ack.version, sizeof(n2n_version_t));
+                }
 
                 break;
             }
