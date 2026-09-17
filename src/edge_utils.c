@@ -3623,19 +3623,25 @@ int run_edge_loop (n2n_edge_t *eee) {
                        HASH_COUNT(eee->known_peers));
         }
 
-        /* Periodically re-send our own REGISTER to already p2p-confirmed peers.
-         * REGISTER is the only carrier for dev_addr/dev_desc, and once a peer is
-         * p2p-confirmed nothing re-sends it again -- if that one-off REGISTER got
-         * lost in transit (observed live: consistently one-directional loss), the
-         * peer's TAP/HINT columns in the management console stay blank forever,
-         * since purge_expired_nodes never fires while real traffic keeps refreshing
-         * last_seen. This is deliberately unconditional -- run identically on every
-         * edge, an occasional lost REGISTER self-heals within a retry or two,
-         * without either side needing to detect its own gap (which it can't: the
-         * missing data lives on the *other* end). */
+        /* Periodically re-send our own REGISTER to every peer we know about --
+         * p2p-confirmed (known_peers) as well as still supernode-relayed
+         * (pending_peers, e.g. a TCP-only (-S2) peer that can never complete a
+         * direct P2P handshake and so stays in this table forever). REGISTER is
+         * the only carrier for dev_addr/dev_desc, and once a peer is p2p-confirmed
+         * nothing ever re-sends it again -- if that one-off REGISTER got lost in
+         * transit (observed live: consistently one-directional loss, in both
+         * tables), the peer's TAP/HINT columns in the management console stay
+         * blank forever, since purge_expired_nodes never fires while real traffic
+         * keeps refreshing last_seen in either table. This is deliberately
+         * unconditional -- run identically on every edge, an occasional lost
+         * REGISTER self-heals within a retry or two, without either side needing
+         * to detect its own gap (which it can't: the missing data lives on the
+         * *other* end). */
         if(now > last_p2p_reannounce + N2N_P2P_REANNOUNCE_INTERVAL) {
             struct peer_info *reannounce_peer, *reannounce_tmp;
             HASH_ITER(hh, eee->known_peers, reannounce_peer, reannounce_tmp)
+                send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
+            HASH_ITER(hh, eee->pending_peers, reannounce_peer, reannounce_tmp)
                 send_register(eee, &(reannounce_peer->sock), reannounce_peer->mac_addr, N2N_REGULAR_REG_COOKIE);
             last_p2p_reannounce = now;
         }
