@@ -1412,6 +1412,26 @@ static void send_unregister_super (n2n_edge_t *eee) {
  * worth closing later if this is ever used with header encryption).
  * ---------------------------------------------------------------------- */
 
+/* NOTE: time_stamp() is NOT a linear microsecond counter -- it bit-packs
+ * (seconds << 32) | (microseconds << 12) | a low-order disambiguating
+ * counter, a format built for the replay-protection jitter/frame tolerance
+ * checks in header_encryption, not for measuring elapsed time via plain
+ * subtraction (confirmed the hard way: naive use of time_stamp() here made
+ * every probe interval/timeout comparison meaningless, causing probes to
+ * fire in an unthrottled burst instead of once per --probe-interval). All
+ * weight-mode timing uses this real linear microsecond clock instead;
+ * time_stamp() is still used, separately, for the packet_header_encrypt()
+ * call in sn_weight_send_probe() since that argument does need its format. */
+static uint64_t sn_weight_now_us (void) {
+
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+
+    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+}
+
+
 static sn_weight_state_t *sn_weight_ensure_state (n2n_edge_t *eee, peer_info_t *peer) {
 
     if(!peer->weight_state) {
@@ -1510,7 +1530,7 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     if(!ws || !ack->seq || (ack->seq != ws->outstanding_seq))
         return; /* stale, duplicate, or unrelated ack: ignore */
 
-    now_us = time_stamp();
+    now_us = sn_weight_now_us();
     rtt_usec = (uint32_t)(now_us - ack->send_time);
 
     sn_weight_push_sample(ws, 1, rtt_usec);
@@ -1772,7 +1792,7 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
     traceEvent(TRACE_NORMAL, "DEBUGWEIGHT tick proceeding, shared_secret=%d dynamic_key_ready=%d",
                eee->conf.shared_secret ? 1 : 0, eee->dynamic_key_ready);
 
-    now_us = time_stamp();
+    now_us = sn_weight_now_us();
     probe_interval_us = (uint64_t)eee->conf.sn_probe_interval * 1000ULL;
     timeout_us = probe_interval_us * N2N_SN_PROBE_TIMEOUT_FACTOR;
 
