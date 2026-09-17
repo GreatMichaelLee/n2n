@@ -2613,6 +2613,69 @@ static int process_udp (n2n_sn_t * sss,
 }
 
 
+/* Proactively re-announce every known edge's dev_addr/dev_desc to every other edge in
+ * the same community, sourced entirely from data the supernode already has (an edge
+ * submits both in its own REGISTER_SUPER, see n2n_REGISTER_SUPER_t) -- rather than
+ * relying on edge-to-edge REGISTER traffic to carry it. An edge's connection to its
+ * own supernode is, by definition, its single most reliable link (that's how it's
+ * connected at all), whereas edge-to-edge REGISTER can be silently lost in one
+ * direction only (confirmed live) or, for a solitude-mode edge (-S/-S1/-S2,
+ * allow_p2p=0), never sent by that edge in the first place -- solitude mode disables
+ * P2P attempts entirely, and REGISTER doubles as both the P2P-negotiation packet and
+ * the only carrier of dev_addr/dev_desc, so it silences both together. The supernode
+ * constructing this packet itself sidesteps that: it isn't attempting P2P on the
+ * edge's behalf (recipients never reply to a from-supernode REGISTER, see the
+ * REGISTER handler's from_supernode branch), it's purely handing out already-known
+ * identity data. */
+static void sn_broadcast_edge_hints (n2n_sn_t *sss, time_t now) {
+
+    struct sn_community *comm, *tmp_comm;
+    struct peer_info *src, *tmp_src, *dst, *tmp_dst;
+
+    HASH_ITER(hh, sss->communities, comm, tmp_comm) {
+        if(comm->is_federation)
+            continue;
+
+        HASH_ITER(hh, comm->edges, src, tmp_src) {
+            if(is_null_mac(src->mac_addr) || (src->dev_desc[0] == '\0'))
+                continue; /* nothing useful to tell anyone about this one yet */
+
+            HASH_ITER(hh, comm->edges, dst, tmp_dst) {
+                n2n_common_t   cmn;
+                n2n_REGISTER_t reg;
+                uint8_t        pktbuf[N2N_SN_PKTBUF_SIZE];
+                size_t         idx = 0;
+
+                if(dst == src)
+                    continue;
+
+                memset(&cmn, 0, sizeof(cmn));
+                memset(&reg, 0, sizeof(reg));
+                cmn.ttl = N2N_DEFAULT_TTL;
+                cmn.pc = n2n_register;
+                cmn.flags = N2N_FLAGS_FROM_SUPERNODE;
+                memcpy(cmn.community, comm->community, N2N_COMMUNITY_SIZE);
+
+                reg.cookie = n2n_rand();
+                memcpy(reg.srcMac, src->mac_addr, N2N_MAC_SIZE);
+                memcpy(reg.dstMac, dst->mac_addr, N2N_MAC_SIZE);
+                memcpy(&(reg.sock), &(src->sock), sizeof(n2n_sock_t));
+                reg.dev_addr.net_addr = src->dev_addr.net_addr;
+                reg.dev_addr.net_bitlen = src->dev_addr.net_bitlen;
+                memcpy(reg.dev_desc, src->dev_desc, N2N_DESC_SIZE);
+
+                encode_REGISTER(pktbuf, &idx, &cmn, &reg);
+
+                if(comm->header_encryption == HEADER_ENCRYPTION_ENABLED)
+                    packet_header_encrypt(pktbuf, idx, idx, comm->header_encryption_ctx_dynamic,
+                                          comm->header_iv_ctx_dynamic, time_stamp());
+
+                sendto_peer(sss, dst, pktbuf, idx);
+            }
+        }
+    }
+}
+
 /** Long lived processing entry point. Split out from main to simply
  *  daemonisation on some platforms. */
 int run_sn_loop (n2n_sn_t *sss) {
@@ -2621,6 +2684,7 @@ int run_sn_loop (n2n_sn_t *sss) {
     time_t last_purge_edges = 0;
     time_t last_sort_communities = 0;
     time_t last_re_reg_and_purge = 0;
+    time_t last_hint_broadcast = 0;
 
     sss->start_time = time(NULL);
 
@@ -2828,6 +2892,10 @@ int run_sn_loop (n2n_sn_t *sss) {
 
         re_register_and_purge_supernodes(sss, sss->federation, &last_re_reg_and_purge, now, 0 /* not forced */);
         purge_expired_communities(sss, &last_purge_edges, now);
+        if(now > last_hint_broadcast + N2N_SN_HINT_BROADCAST_INTERVAL) {
+            sn_broadcast_edge_hints(sss, now);
+            last_hint_broadcast = now;
+        }
         sort_communities(sss, &last_sort_communities, now);
         resolve_check(sss->resolve_parameter, 0 /* presumably, no special resolution requirement */, now);
     } /* while */

@@ -160,6 +160,9 @@ enum n2n_event_topic {
                                                      * by real data quickly, instead of potentially never clearing the
                                                      * (deliberately conservative) steady-state threshold against a candidate
                                                      * that is only modestly, but consistently, better. */
+#define N2N_SN_HINT_BROADCAST_INTERVAL     30      /* sec: how often the supernode proactively re-announces each
+                                                     * known edge's dev_addr/dev_desc to every other edge in its
+                                                     * community, see sn_broadcast_edge_hints() in sn_utils.c */
 
 #define N2N_CLOSE_SOCKET_COUNTER_MAX 15        /* number of times of edge's reconnects to supernode after   */
                                                /* which the socket explicitly is closed before reopening    */
