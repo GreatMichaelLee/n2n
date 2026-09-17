@@ -31,8 +31,10 @@
 #define MSG_TYPE_FEDERATION                 9
 #define MSG_TYPE_PEER_INFO                  10
 #define MSG_TYPE_QUERY_PEER                 11
-#define MSG_TYPE_MAX_TYPE                   11
 #define MSG_TYPE_RE_REGISTER_SUPER          12
+#define MSG_TYPE_SN_PROBE                   13
+#define MSG_TYPE_SN_PROBE_ACK               14
+#define MSG_TYPE_MAX_TYPE                   14
 
 /* Max available space to add supernodes' informations (sockets and MACs) in REGISTER_SUPER_ACK
  * Field sizes of REGISTER_SUPER_ACK as used in encode/decode fucntions in src/wire.c
@@ -135,6 +137,23 @@ enum n2n_event_topic {
 
 #define N2N_TCP_BACKLOG_QUEUE_SIZE   3         /* number of concurrently pending connections to be accepted */
                                                /* NOT the number of max. TCP connections                    */
+
+/* SN_SELECTION_STRATEGY_WEIGHT defaults, all overridable via edge CLI options */
+#define N2N_SN_PROBE_INTERVAL_DEFAULT      2000    /* ms between probes sent to each known supernode */
+#define N2N_SN_PROBE_WINDOW_DEFAULT        20      /* number of probe samples kept per supernode */
+#define N2N_SN_PROBE_TIMEOUT_FACTOR        3       /* a probe is considered lost after this many probe intervals go unanswered */
+#define N2N_SN_WEIGHT_LOSS_DEFAULT         1000    /* ms penalty applied at 100% loss rate */
+#define N2N_SN_WEIGHT_JITTER_DEFAULT       1000    /* jitter weight, in milli-units (1000 == coefficient of 1.0) */
+#define N2N_SN_SWITCH_THRESHOLD_DEFAULT    20      /* percent: candidate must beat current metric by at least this much */
+#define N2N_SN_SWITCH_CONFIRM_DEFAULT      3       /* number of consecutive probe windows a candidate must stay ahead before switching */
+#define N2N_SN_PROBE_RECONNECT_BACKOFF     5000    /* ms, minimum time between reconnect attempts for a dead TCP probe connection */
+#define N2N_SN_BOOTSTRAP_WINDOW_SECS       60      /* sec since edge start: switch-threshold is forced to 0% (any consistent
+                                                     * advantage counts, still gated by sn_switch_confirm) so the very first
+                                                     * supernode pick -- which is arbitrary config order, not measurement,
+                                                     * see edge_init()'s eee->curr_sn = eee->conf.supernodes -- gets corrected
+                                                     * by real data quickly, instead of potentially never clearing the
+                                                     * (deliberately conservative) steady-state threshold against a candidate
+                                                     * that is only modestly, but consistently, better. */
 
 #define N2N_CLOSE_SOCKET_COUNTER_MAX 15        /* number of times of edge's reconnects to supernode after   */
                                                /* which the socket explicitly is closed before reopening    */

@@ -108,6 +108,16 @@ int sn_selection_criterion_calculate (n2n_edge_t *eee, peer_info_t *peer, SN_SEL
             break;
         }
 
+        case SN_SELECTION_STRATEGY_WEIGHT: {
+            /* the real composite metric is computed out-of-band in edge_utils.c from
+             * SN_PROBE/SN_PROBE_ACK round trips (see sn_weight_recompute_metric()) and
+             * switching decisions use peer->weight_state->metric directly with their own
+             * hysteresis, bypassing sort_supernodes()'s immediate-switch-on-reorder logic
+             * entirely. selection_criterion itself is therefore unused for this strategy;
+             * nothing to compute here. */
+            break;
+        }
+
         default: {
             // this should never happen
             traceEvent(TRACE_ERROR, "selection_criterion unknown selection strategy configuration");
@@ -140,7 +150,8 @@ int sn_selection_criterion_common_data_default (n2n_edge_t *eee) {
             break;
         }
 
-        case SN_SELECTION_STRATEGY_MAC: {
+        case SN_SELECTION_STRATEGY_MAC:
+        case SN_SELECTION_STRATEGY_WEIGHT: {
             eee->sn_selection_criterion_common_data = 0;
             break;
         }
@@ -219,6 +230,28 @@ extern char * sn_selection_criterion_str (n2n_edge_t *eee, selection_criterion_s
         return NULL;
     }
     memset(out, 0, SN_SELECTION_CRITERION_BUF_SIZE);
+
+    if(eee->conf.sn_selection_strategy == SN_SELECTION_STRATEGY_WEIGHT) {
+        /* selection_criterion is unused for this strategy (see sn_selection_criterion_calculate()),
+         * so the generic "keep off the super-big undetermined values" gate below does not apply --
+         * report straight from weight_state instead, which is what actually drives switching. */
+        /* kept compact on purpose: SN_SELECTION_CRITERION_BUF_SIZE is only 16 bytes,
+         * matching the "rtt = %6ld ms" / "load = %8ld" convention used by the other
+         * strategies above -- detailed metric breakdown isn't a good fit for this field. */
+        if(peer->weight_state && peer->weight_state->sample_count) {
+            chars = snprintf(out, SN_SELECTION_CRITERION_BUF_SIZE,
+                             "%c %6.1fms",
+                             (peer == eee->curr_sn) ? 'A' : 'S',
+                             peer->weight_state->metric);
+        } else {
+            chars = snprintf(out, SN_SELECTION_CRITERION_BUF_SIZE, "%c no data",
+                             (peer == eee->curr_sn) ? 'A' : 'S');
+        }
+        if(chars > SN_SELECTION_CRITERION_BUF_SIZE) {
+            traceEvent(TRACE_ERROR, "selection_criterion buffer overflow");
+        }
+        return out;
+    }
 
     // keep off the super-big values (used for "bad" or "good" or "undetermined" supernodes,
     // easier to sort to the end of the list).

@@ -558,7 +558,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     HASH_ITER(hh, eee->pending_peers, peer, tmpPeer) {
         ++num_pending_peers;
         net = htonl(peer->dev_addr.net_addr);
-        snprintf(time_buf, sizeof(time_buf), "%9u", (unsigned int)(now - peer->last_seen));
+        snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                             "%4u | %-15s | %-17s | %-21s | %-15s | %9s |\n",
                             ++num,
@@ -582,7 +582,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     HASH_ITER(hh, eee->known_peers, peer, tmpPeer) {
         ++num_known_peers;
         net = htonl(peer->dev_addr.net_addr);
-        snprintf(time_buf, sizeof(time_buf), "%9u", (unsigned int)(now - peer->last_seen));
+        snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                             "%4u | %-15s | %-17s | %-21s | %-15s | %9s |\n",
                             ++num,
@@ -605,8 +605,8 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                         "SUPERNODES\n");
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
-        snprintf(time_buf, sizeof(time_buf), "%9u", (unsigned int)(now - peer->last_seen));
-        snprintf(uptime_buf, sizeof(uptime_buf), "%10u", (unsigned int)(peer->uptime));
+        snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
+        snprintf(uptime_buf, sizeof(uptime_buf), "%9us", (unsigned int)(peer->uptime));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                             "%-19s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
                             peer->version,

@@ -147,7 +147,12 @@ int decode_uint64 (uint64_t * out,
         return 0;
     }
 
-    *out  = be64toh(*(uint64_t*)base + *idx);
+    /* NOTE: this was previously `*(uint64_t*)base + *idx` -- dereferencing base at offset 0
+     * and then adding the *idx integer to that garbage value, instead of offsetting the
+     * pointer before dereferencing. decode_uint64() had no callers anywhere in the tree
+     * until n2n_SN_PROBE_t's send_time field became the first one, which is how this was
+     * caught: SN_PROBE_ACK round trips were echoing back nonsense 64-bit timestamps. */
+    *out  = be64toh(*(uint64_t*)(base + *idx));
     *idx += 8;
     *rem -= 8;
 
@@ -851,6 +856,38 @@ int decode_QUERY_PEER (n2n_QUERY_PEER_t * pkt,
     retval += decode_mac(pkt->srcMac, base, rem, idx);
     retval += decode_mac(pkt->targetMac, base, rem, idx);
     retval += decode_uint16(&(pkt->aflags), base, rem, idx);
+
+    return retval;
+}
+
+
+/* shared by MSG_TYPE_SN_PROBE and MSG_TYPE_SN_PROBE_ACK: the receiver of a PROBE just
+ * echoes seq/send_time back verbatim in a PROBE_ACK, so encode/decode are shared too. */
+int encode_SN_PROBE (uint8_t * base,
+                     size_t * idx,
+                     const n2n_common_t * common,
+                     const n2n_SN_PROBE_t * pkt) {
+
+    int retval = 0;
+
+    retval += encode_common(base, idx, common);
+    retval += encode_uint32(base, idx, pkt->seq);
+    retval += encode_uint64(base, idx, pkt->send_time);
+
+    return retval;
+}
+
+int decode_SN_PROBE (n2n_SN_PROBE_t * pkt,
+                     const n2n_common_t * cmn, /* info on how to interpret it */
+                     const uint8_t * base,
+                     size_t * rem,
+                     size_t * idx) {
+
+    size_t retval = 0;
+    memset(pkt, 0, sizeof(n2n_SN_PROBE_t));
+
+    retval += decode_uint32(&(pkt->seq), base, rem, idx);
+    retval += decode_uint64(&(pkt->send_time), base, rem, idx);
 
     return retval;
 }

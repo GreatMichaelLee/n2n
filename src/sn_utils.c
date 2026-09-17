@@ -2368,6 +2368,41 @@ static int process_udp (n2n_sn_t * sss,
             break;
         }
 
+        case MSG_TYPE_SN_PROBE: {
+            /* stateless health/latency probe used by SN_SELECTION_STRATEGY_WEIGHT on the
+             * edge side: echo seq/send_time back verbatim. No registration state is
+             * required (works against edges that have never registered with us), but the
+             * community is still carried and, if that community uses header encryption,
+             * the ACK is encrypted the same way QUERY_PEER/PEER_INFO are -- otherwise a
+             * plaintext PROBE_ACK would simply be dropped by the edge as an undecryptable
+             * packet instead of being recognized. */
+            n2n_SN_PROBE_t      probe;
+            uint8_t             ackbuf[N2N_SN_PKTBUF_SIZE];
+            size_t              ackx = 0;
+            n2n_common_t        cmn2;
+
+            decode_SN_PROBE(&probe, &cmn, udp_buf, &rem, &idx);
+
+            traceEvent(TRACE_DEBUG, "Rx SN_PROBE seq=%u from %s",
+                       probe.seq, sock_to_cstr(sockbuf, &sender));
+
+            cmn2.ttl = N2N_DEFAULT_TTL;
+            cmn2.pc = MSG_TYPE_SN_PROBE_ACK;
+            cmn2.flags = N2N_FLAGS_FROM_SUPERNODE;
+            memcpy(cmn2.community, cmn.community, sizeof(n2n_community_t));
+
+            encode_SN_PROBE(ackbuf, &ackx, &cmn2, &probe);
+
+            if(comm && (comm->header_encryption == HEADER_ENCRYPTION_ENABLED)) {
+                packet_header_encrypt(ackbuf, ackx, ackx, comm->header_encryption_ctx_dynamic,
+                                      comm->header_iv_ctx_dynamic, time_stamp());
+            }
+
+            sendto_sock(sss, socket_fd, sender_sock, ackbuf, ackx);
+
+            break;
+        }
+
         case MSG_TYPE_QUERY_PEER: {
             n2n_QUERY_PEER_t                       query;
             uint8_t                                encbuf[N2N_SN_PKTBUF_SIZE];

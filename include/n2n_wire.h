@@ -237,4 +237,15 @@ int decode_QUERY_PEER (n2n_QUERY_PEER_t * pkt,
                        size_t * rem,
                        size_t * idx);
 
+int encode_SN_PROBE (uint8_t * base,
+                     size_t * idx,
+                     const n2n_common_t * common,
+                     const n2n_SN_PROBE_t * pkt);
+
+int decode_SN_PROBE (n2n_SN_PROBE_t * pkt,
+                     const n2n_common_t * cmn, /* info on how to interpret it */
+                     const uint8_t * base,
+                     size_t * rem,
+                     size_t * idx);
+
 #endif /* #if !defined( N2N_WIRE_H_ ) */
