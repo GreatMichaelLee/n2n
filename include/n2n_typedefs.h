@@ -496,10 +496,13 @@ typedef struct n2n_QUERY_PEER {
 
 
 /* used for both MSG_TYPE_SN_PROBE and MSG_TYPE_SN_PROBE_ACK: the receiver of a PROBE
- * echoes seq/send_time back verbatim in a PROBE_ACK, so the struct is shared. */
+ * echoes seq/send_time back verbatim in a PROBE_ACK, so the struct is shared. version
+ * is only meaningful on the ACK leg (supernode -> edge, filled from n2n_sn_t.version);
+ * an edge has no use for its own version here and leaves it zeroed on the PROBE leg. */
 typedef struct n2n_SN_PROBE {
     uint32_t                      seq;
     uint64_t                      send_time;      /* originator's local microsecond timestamp */
+    n2n_version_t                 version;
 } n2n_SN_PROBE_t;
 
 typedef struct n2n_buf n2n_buf_t;

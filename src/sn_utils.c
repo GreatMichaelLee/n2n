@@ -2386,6 +2386,11 @@ static int process_udp (n2n_sn_t * sss,
             traceEvent(TRACE_DEBUG, "Rx SN_PROBE seq=%u from %s",
                        probe.seq, sock_to_cstr(sockbuf, &sender));
 
+            /* hand our own version back on the ACK leg -- the edge has no other way
+             * to learn it under --select-mac/--select-weight, which don't use the
+             * legacy QUERY_PEER/PONG exchange that --select-rtt relies on for this. */
+            memcpy(probe.version, sss->version, sizeof(n2n_version_t));
+
             cmn2.ttl = N2N_DEFAULT_TTL;
             cmn2.pc = MSG_TYPE_SN_PROBE_ACK;
             cmn2.flags = N2N_FLAGS_FROM_SUPERNODE;

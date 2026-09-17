@@ -597,12 +597,21 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         msg_len = 0;
     }
 
-    // dump supernodes
+    // dump supernodes -- this table's columns don't match the TAP/MAC/EDGE/HINT layout
+    // shared by SUPERNODE FORWARD/PEER TO PEER above (it's a different kind of row: no
+    // TAP address, and the position that looks like "HINT" is actually the RTT/weight
+    // selection criterion, not a peer description), so it gets its own header instead of
+    // reusing the one printed at the very top.
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "-------------------------------------------------------------------------------------------------------------\n");
 
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "SUPERNODES\n");
+    msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                        "%-19s %1s%1s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                        "VERSION", "L", "A", "MAC", "EDGE", "SELECTION", "LAST SEEN", "UPTIME");
+    msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
+                        "=============================================================================================================\n");
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
         snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));

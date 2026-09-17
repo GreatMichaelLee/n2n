@@ -1554,6 +1554,9 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     sn_weight_recompute_metric(eee, ws);
     ws->outstanding_seq = 0;
 
+    if(ack->version[0])
+        memcpy(peer->version, ack->version, sizeof(n2n_version_t));
+
     traceEvent(TRACE_DEBUG, "SN_SELECTION_STRATEGY_WEIGHT: probe rtt=%uus for supernode [%s], metric now %.1fms",
                rtt_usec, sock_to_cstr(sockbuf, &peer->sock), ws->metric);
 }
