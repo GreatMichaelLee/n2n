@@ -2665,6 +2665,26 @@ static int process_udp (n2n_sn_t * sss,
                                           comm->header_encryption_ctx_dynamic, comm->header_iv_ctx_dynamic,
                                           time_stamp());
                 }
+
+                /* try_broadcast()'s federation-relay-then-local-rebroadcast path has a
+                 * known reliability gap for edges on a *different* supernode than the
+                 * originator -- see sn_broadcast_edge_hints()'s comment: "HK's dev_desc
+                 * reached LH fine while both were on the same supernode, then silently
+                 * stopped the moment HK's weight-selection moved it to the other one."
+                 * Confirmed live for this message type too (2026-09-17): NS on TX
+                 * advertising a route reached LH (also on TX) fine but never reached HK
+                 * (on VMS) through try_broadcast()'s federation hop alone. Directly
+                 * try_forward() to every already-known cross-supernode MAC as well, the
+                 * exact technique sn_broadcast_edge_hints() already uses (comm->assoc,
+                 * built for free from ordinary cross-site traffic) -- this doesn't
+                 * depend on the federation-relay path at all for reaching them. Only
+                 * done on the originating supernode (!from_supernode) so a federation
+                 * hop of this message never re-triggers another round of it. */
+                node_supernode_association_t *assoc, *tmp_assoc;
+                HASH_ITER(hh, comm->assoc, assoc, tmp_assoc) {
+                    try_forward(sss, comm, &cmn2, assoc->mac, 0 /* forces the assoc-lookup branch, see try_forward() */,
+                               rec_buf, encx, now);
+                }
             } else {
                 rec_buf = udp_buf;
                 encx = udp_size;
