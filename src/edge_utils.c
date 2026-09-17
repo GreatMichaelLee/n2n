@@ -1404,12 +1404,12 @@ static void send_unregister_super (n2n_edge_t *eee) {
  * supernode gets its own dedicated, independently (re)connecting TCP probe
  * socket (peer->weight_state->probe_tcp_sock).
  *
- * Known limitation: the standalone TCP probe reader below does not attempt
- * header decryption, so under HEADER_ENCRYPTION_ENABLED a standby supernode
- * probed over TCP will never successfully parse its PROBE_ACKs (those probes
- * always read as "lost", which just makes that candidate look worse than it
- * is -- a conservative failure mode, not a correctness bug, but a real gap
- * worth closing later if this is ever used with header encryption).
+ * The standalone TCP probe reader (sn_weight_service_probe_tcp_read()) does its
+ * own header_encryption_ctx_dynamic decrypt before decode_common(), matching
+ * what the main dispatch path does for everything else -- found the hard way
+ * during HK field testing: forgetting this made every standby-supernode probe
+ * read as 100% loss (bytes arrived correctly framed, decode_common() just
+ * always failed closed on still-encrypted data).
  * ---------------------------------------------------------------------- */
 
 /* NOTE: time_stamp() is NOT a linear microsecond counter -- it bit-packs
@@ -1653,33 +1653,37 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
         return;
     }
 
-    /* full frame received: this connection never carries anything but a PROBE_ACK */
+    /* full frame received: this connection never carries anything but a PROBE_ACK.
+     * Community/community_name is the standard n2n community; if the edge's user/pw
+     * auth (-J) forced header_encryption on (see edge.c's "force header encryption"),
+     * the supernode encrypted this the same way it does everything else non-exempt --
+     * decrypt in place before decode_common(), exactly like the main dispatch path
+     * does for the UDP/main-socket case. Without this the frame's first byte never
+     * matches N2N_PKT_VERSION and decode_common() always fails closed (this was the
+     * actual bug behind every standby-supernode probe reading as 100% loss: bytes
+     * arrived correctly framed, but were never decrypted). */
     {
         n2n_common_t cmn;
         n2n_SN_PROBE_t ack;
         size_t rem = ws->probe_tcp_position - sizeof(uint16_t);
         size_t idx = 0;
         uint8_t *base = ws->probe_tcp_buf + sizeof(uint16_t);
+        uint64_t stamp;
 
-        {
-            int dc_ret;
+        if(eee->conf.header_encryption == HEADER_ENCRYPTION_ENABLED) {
+            packet_header_decrypt(base, (uint16_t)rem, (char *)eee->conf.community_name,
+                                  eee->conf.header_encryption_ctx_dynamic, eee->conf.header_iv_ctx_dynamic,
+                                  &stamp);
+            /* best-effort: no replay/jitter check here (unlike the main dispatch path) --
+             * a probe that fails to decrypt/checksum just decodes as garbage below and
+             * gets silently discarded, which is an acceptable, self-correcting outcome
+             * for a periodic health probe (the next one tries again a second later). */
+        }
 
-            memset(&cmn, 0, sizeof(cmn));
-            dc_ret = decode_common(&cmn, base, &rem, &idx);
-
-            {
-                char hexbuf[128];
-                size_t hi, hn = (ws->probe_tcp_position < 40) ? ws->probe_tcp_position : 40;
-                for(hi = 0; hi < hn; hi++)
-                    snprintf(hexbuf + hi*2, 3, "%02x", ws->probe_tcp_buf[hi]);
-                traceEvent(TRACE_NORMAL, "DEBUGWEIGHT full frame decode_common_ret=%d cmn.pc=%u expected_pc=%u rem_after=%zu idx_after=%zu raw_hex=%s",
-                           dc_ret, cmn.pc, MSG_TYPE_SN_PROBE_ACK, rem, idx, hexbuf);
-            }
-
-            if((dc_ret >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
-                decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
-                sn_weight_record_probe_ack(eee, peer, &ack);
-            }
+        memset(&cmn, 0, sizeof(cmn));
+        if((decode_common(&cmn, base, &rem, &idx) >= 0) && (cmn.pc == MSG_TYPE_SN_PROBE_ACK)) {
+            decode_SN_PROBE(&ack, &cmn, base, &rem, &idx);
+            sn_weight_record_probe_ack(eee, peer, &ack);
         }
     }
 
