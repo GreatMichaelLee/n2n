@@ -936,6 +936,7 @@ static int handle_remote_auth (n2n_edge_t *eee, struct peer_info *peer, const n2
                                              &(eee->conf.header_encryption_ctx_dynamic),
                                              &(eee->conf.header_iv_ctx_dynamic));
             eee->dynamic_key_ready = 1;
+            traceEvent(TRACE_NORMAL, "DEBUGWEIGHT dynamic_key_ready=1 now");
             break;
         default:
             break;
@@ -1503,6 +1504,9 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     uint32_t rtt_usec;
     n2n_sock_str_t sockbuf;
 
+    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT record_probe_ack entry: ws=%p ack_seq=%u outstanding_seq=%u",
+               (void*)ws, ack->seq, ws ? ws->outstanding_seq : 0);
+
     if(!ws || !ack->seq || (ack->seq != ws->outstanding_seq))
         return; /* stale, duplicate, or unrelated ack: ignore */
 
@@ -1513,7 +1517,7 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     sn_weight_recompute_metric(eee, ws);
     ws->outstanding_seq = 0;
 
-    traceEvent(TRACE_DEBUG, "SN_SELECTION_STRATEGY_WEIGHT: probe rtt=%uus for supernode [%s], metric now %.1fms",
+    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT probe rtt=%uus for supernode [%s], metric now %.1fms",
                rtt_usec, sock_to_cstr(sockbuf, &peer->sock), ws->metric);
 }
 
@@ -1674,6 +1678,9 @@ static void sn_weight_send_probe (n2n_edge_t *eee, peer_info_t *peer, sn_weight_
                               time_stamp());
     }
 
+    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT send_probe seq=%u use_main_sock=%d probe_tcp_sock=%d header_enc=%d",
+               probe.seq, use_main_sock, ws->probe_tcp_sock, eee->conf.header_encryption);
+
     if(use_main_sock) {
         sendto_sock(eee, pktbuf, idx, &peer->sock);
     } else if(ws->probe_tcp_sock >= 0) {
@@ -1762,6 +1769,8 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
          * dropped -- wait for the real key before sending anything. */
         return;
     }
+    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT tick proceeding, shared_secret=%d dynamic_key_ready=%d",
+               eee->conf.shared_secret ? 1 : 0, eee->dynamic_key_ready);
 
     now_us = time_stamp();
     probe_interval_us = (uint64_t)eee->conf.sn_probe_interval * 1000ULL;
