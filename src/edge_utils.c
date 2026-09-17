@@ -936,7 +936,6 @@ static int handle_remote_auth (n2n_edge_t *eee, struct peer_info *peer, const n2
                                              &(eee->conf.header_encryption_ctx_dynamic),
                                              &(eee->conf.header_iv_ctx_dynamic));
             eee->dynamic_key_ready = 1;
-            traceEvent(TRACE_NORMAL, "DEBUGWEIGHT dynamic_key_ready=1 now");
             break;
         default:
             break;
@@ -1524,9 +1523,6 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     uint32_t rtt_usec;
     n2n_sock_str_t sockbuf;
 
-    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT record_probe_ack entry: ws=%p ack_seq=%u outstanding_seq=%u",
-               (void*)ws, ack->seq, ws ? ws->outstanding_seq : 0);
-
     if(!ws || !ack->seq || (ack->seq != ws->outstanding_seq))
         return; /* stale, duplicate, or unrelated ack: ignore */
 
@@ -1537,7 +1533,7 @@ static void sn_weight_record_probe_ack (n2n_edge_t *eee, peer_info_t *peer, cons
     sn_weight_recompute_metric(eee, ws);
     ws->outstanding_seq = 0;
 
-    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT probe rtt=%uus for supernode [%s], metric now %.1fms",
+    traceEvent(TRACE_DEBUG, "SN_SELECTION_STRATEGY_WEIGHT: probe rtt=%uus for supernode [%s], metric now %.1fms",
                rtt_usec, sock_to_cstr(sockbuf, &peer->sock), ws->metric);
 }
 
@@ -1621,9 +1617,6 @@ static void sn_weight_service_probe_tcp_read (n2n_edge_t *eee, peer_info_t *peer
     bread = recvfrom(ws->probe_tcp_sock, (void*)(ws->probe_tcp_buf + ws->probe_tcp_position),
                      ws->probe_tcp_expected - ws->probe_tcp_position, 0,
                      (struct sockaddr*)&sas, &ss_size);
-
-    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT probe_tcp_read called sock=%d bread=%ld errno=%d expected=%u position=%u",
-               ws->probe_tcp_sock, (long)bread, errno, ws->probe_tcp_expected, ws->probe_tcp_position);
 
     if(bread <= 0) {
         if((bread < 0) && ((errno == EAGAIN) || (errno == EWOULDBLOCK)))
@@ -1721,9 +1714,6 @@ static void sn_weight_send_probe (n2n_edge_t *eee, peer_info_t *peer, sn_weight_
                               time_stamp());
     }
 
-    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT send_probe seq=%u use_main_sock=%d probe_tcp_sock=%d header_enc=%d",
-               probe.seq, use_main_sock, ws->probe_tcp_sock, eee->conf.header_encryption);
-
     if(use_main_sock) {
         sendto_sock(eee, pktbuf, idx, &peer->sock);
     } else if(ws->probe_tcp_sock >= 0) {
@@ -1812,8 +1802,6 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
          * dropped -- wait for the real key before sending anything. */
         return;
     }
-    traceEvent(TRACE_NORMAL, "DEBUGWEIGHT tick proceeding, shared_secret=%d dynamic_key_ready=%d",
-               eee->conf.shared_secret ? 1 : 0, eee->dynamic_key_ready);
 
     now_us = sn_weight_now_us();
     probe_interval_us = (uint64_t)eee->conf.sn_probe_interval * 1000ULL;
@@ -1843,11 +1831,6 @@ static void sn_weight_tick (n2n_edge_t *eee, time_t now) {
                 continue;
             }
         }
-
-        traceEvent(TRACE_NORMAL, "DEBUGWEIGHT gate check use_main_sock=%d outstanding_seq=%u now_us=%llu send_time=%llu delta=%lld interval_us=%llu",
-                   use_main_sock, ws->outstanding_seq,
-                   (unsigned long long)now_us, (unsigned long long)ws->outstanding_send_time,
-                   (long long)(now_us - ws->outstanding_send_time), (unsigned long long)probe_interval_us);
 
         /* an outstanding probe that never got answered counts as a lost sample */
         if(ws->outstanding_seq && ((now_us - ws->outstanding_send_time) > timeout_us)) {
@@ -1894,13 +1877,9 @@ static void sn_weight_service_read_fds (n2n_edge_t *eee, fd_set *socket_mask) {
         return;
 
     HASH_ITER(hh, eee->conf.supernodes, peer, tmp) {
-        if(peer->weight_state && (peer->weight_state->probe_tcp_sock >= 0)) {
-            int is_set = FD_ISSET(peer->weight_state->probe_tcp_sock, socket_mask);
-            if(is_set)
-                traceEvent(TRACE_NORMAL, "DEBUGWEIGHT service_read_fds sock=%d is_set=%d", peer->weight_state->probe_tcp_sock, is_set);
-            if(is_set)
-                sn_weight_service_probe_tcp_read(eee, peer);
-        }
+        if(peer->weight_state && (peer->weight_state->probe_tcp_sock >= 0)
+           && FD_ISSET(peer->weight_state->probe_tcp_sock, socket_mask))
+            sn_weight_service_probe_tcp_read(eee, peer);
     }
 }
 
