@@ -923,7 +923,7 @@ void sn_term (n2n_sn_t *sss) {
 
 void update_node_supernode_association (struct sn_community *comm,
                                         n2n_mac_t *edgeMac, const struct sockaddr *sender_sock, socklen_t sock_size,
-                                        time_t now, const n2n_desc_t *dev_desc) {
+                                        time_t now, const n2n_desc_t *dev_desc, const n2n_ip_subnet_t *dev_addr) {
 
     node_supernode_association_t *assoc;
 
@@ -951,6 +951,8 @@ void update_node_supernode_association (struct sn_community *comm,
      * didn't carry one. */
     if(dev_desc)
         memcpy(&(assoc->dev_desc), dev_desc, sizeof(n2n_desc_t));
+    if(dev_addr)
+        memcpy(&(assoc->dev_addr), dev_addr, sizeof(n2n_ip_subnet_t));
     assoc->last_seen = now;
 }
 
@@ -2179,7 +2181,7 @@ static int process_udp (n2n_sn_t * sss,
                 } else {
                     // this is an edge with valid authentication registering with another supernode, so ...
                     // 1- ... associate it with that other supernode
-                    update_node_supernode_association(comm, &(reg.edgeMac), sender_sock, sock_size, now, &(reg.dev_desc));
+                    update_node_supernode_association(comm, &(reg.edgeMac), sender_sock, sock_size, now, &(reg.dev_desc), &(reg.dev_addr));
                     // 2- ... we can delete it from regular list if present (can happen)
                     HASH_FIND_PEER(comm->edges, reg.edgeMac, peer);
                     if(peer != NULL) {
@@ -2618,7 +2620,7 @@ static int process_udp (n2n_sn_t * sss,
             if(peer != NULL) {
                 if((comm->is_federation == IS_NO_FEDERATION) && (!is_null_mac(pi.srcMac))) {
                     // snoop on the information to use for supernode forwarding (do not wait until first remote REGISTER_SUPER)
-                    update_node_supernode_association(comm, &(pi.mac), sender_sock, sock_size, now, NULL);
+                    update_node_supernode_association(comm, &(pi.mac), sender_sock, sock_size, now, NULL, NULL);
 
                     // this is a PEER_INFO for one of the edges conencted to this supernode, forward,
                     // i.e. re-assemble (memcpy of udpbuf to encbuf could be sufficient as well)

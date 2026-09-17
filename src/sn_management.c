@@ -582,9 +582,35 @@ int process_mgmt (n2n_sn_t *sss,
         for(i = 0; i < num_remote_sns; i++) {
             uint32_t num_this_sn = 0;
             const char *hint;
+            const char *sn_hint = NULL;
 
-            ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
-                                "REMOTE EDGES VIA SUPERNODE %s\n", remote_sns[i]);
+            /* Supernode-to-supernode REGISTER_SUPER never carries a dev_desc at all
+             * (re_register_and_purge_supernodes() leaves it zeroed -- there's no
+             * "my own name" concept for a supernode at the protocol level), so this
+             * can only ever find something if the remote supernode *also* happens
+             * to appear as a locally-registered edge under this same address (some
+             * of this fleet's supernodes double as their own edge for other
+             * purposes) -- best-effort, not a guaranteed match. */
+            HASH_ITER(hh, sss->communities, community, tmp) {
+                HASH_ITER(hh, community->edges, peer, tmpPeer) {
+                    n2n_sock_str_t peer_sock_str;
+
+                    sock_to_cstr(peer_sock_str, &(peer->sock));
+                    if((0 == strcmp(peer_sock_str, remote_sns[i])) && peer->dev_desc[0]) {
+                        sn_hint = (const char *)peer->dev_desc;
+                        break;
+                    }
+                }
+                if(sn_hint)
+                    break;
+            }
+
+            if(sn_hint)
+                ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                    "REMOTE EDGES VIA SUPERNODE %s (%s)\n", remote_sns[i], sn_hint);
+            else
+                ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
+                                    "REMOTE EDGES VIA SUPERNODE %s\n", remote_sns[i]);
             ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                                 " ### | %-19s | %-17s | %-21s %-3s | %-15s | %9s\n",
                                 "TAP", "MAC", "COMMUNITY", "", "HINT", "LAST SEEN");
@@ -609,7 +635,7 @@ int process_mgmt (n2n_sn_t *sss,
                     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                                         "%4u | %-19s | %-17s | %-21s %-3s | %-15s | %9s\n",
                                         ++num_this_sn,
-                                        "",
+                                        (assoc->dev_addr.net_addr == 0) ? "" : ip_subnet_to_str(ip_bit_str, &assoc->dev_addr),
                                         macaddr_str(mac_buf, assoc->mac),
                                         (community->is_federation) ? "-/-" : community->community,
                                         "",

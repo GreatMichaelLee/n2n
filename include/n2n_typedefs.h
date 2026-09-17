@@ -979,6 +979,9 @@ typedef struct node_supernode_association {
                                              * empty string if never learned. Exposed on the mgmt port's
                                              * REMOTE EDGES table so a remote edge shows up by name, not
                                              * just a bare MAC. */
+    n2n_ip_subnet_t             dev_addr;   /* same availability caveat as dev_desc above -- that edge's own
+                                             * tunnel IP, so the REMOTE EDGES table's TAP column isn't just
+                                             * always blank the way it was when this struct only had mac. */
 
     UT_hash_handle hh;                      /* makes this structure hashable */
 } node_supernode_association_t;

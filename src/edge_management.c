@@ -697,7 +697,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
      * actually lines up, not just the header text. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         " ### | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %-24s\n",
-                        "SN VER", "L", "A", "MAC", "ADDRESS", "SELECTION", "SEEN", "STARTED (SN LOCAL TIME)");
+                        "SN VER", "L", "A", "MAC", "ADDRESS", "SELECTION", "LAST SEEN", "UPTIME");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "=======================================================================================================================================\n");
     num = 0;
