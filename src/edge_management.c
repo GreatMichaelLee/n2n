@@ -139,15 +139,38 @@ static void mgmt_supernodes (mgmt_req_t *req, strbuf_t *buf) {
  * routes to the OS routing table; a platform integration layer (OpenWrt's
  * n2n.init today, a future Windows/Android/iOS client's own native code)
  * polls this command and decides what, if anything, to do with it. */
+/* Look up a currently-known peer's dev_desc by MAC -- used to give the IPV6
+ * ROUTES table a human-readable HINT column instead of a bare MAC, the same
+ * kind of description the TAP table already shows for each peer. Checks
+ * known_peers (p2p) then pending_peers (supernode-forwarded); NULL if this
+ * MAC isn't a currently-known peer at all (e.g. the route only reached us
+ * relayed through a supernode we're not directly peered with). */
+static const char *find_peer_desc_by_mac (n2n_edge_t *eee, const n2n_mac_t mac) {
+    /* dev_desc is uint8_t[], cast to char* for use as a plain C string below */
+    struct peer_info *peer, *tmpPeer;
+
+    HASH_ITER(hh, eee->known_peers, peer, tmpPeer) {
+        if(memcmp(peer->mac_addr, mac, N2N_MAC_SIZE) == 0)
+            return (const char *)peer->dev_desc;
+    }
+    HASH_ITER(hh, eee->pending_peers, peer, tmpPeer) {
+        if(memcmp(peer->mac_addr, mac, N2N_MAC_SIZE) == 0)
+            return (const char *)peer->dev_desc;
+    }
+    return NULL;
+}
+
 static void mgmt_routes (mgmt_req_t *req, strbuf_t *buf) {
     size_t msg_len;
     n2n_learned_route_t *route, *tmpRoute;
     macstr_t mac_buf;
     ip6str_t subnet_buf;
+    const char *hint;
 
     HASH_ITER(hh, req->eee->learned_routes, route, tmpRoute) {
 
         inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
+        hint = find_peer_desc_by_mac(req->eee, route->srcMac);
 
         msg_len = snprintf(buf->str, buf->size,
                            "{"
@@ -155,11 +178,13 @@ static void mgmt_routes (mgmt_req_t *req, strbuf_t *buf) {
                            "\"_type\":\"row\","
                            "\"macaddr\":\"%s\","
                            "\"subnet\":\"%s/%u\","
+                           "\"hint\":\"%s\","
                            "\"last_seen\":%li}\n",
                            req->tag,
                            macaddr_str(mac_buf, route->srcMac),
                            subnet_buf,
                            route->subnet.net_bitlen,
+                           hint ? hint : "",
                            route->last_seen);
 
         send_reply(req, buf, msg_len);
@@ -584,10 +609,15 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "COMMUNITY '%s'\n\n",
                         (eee->conf.header_encryption == HEADER_ENCRYPTION_NONE) ? (char*)eee->conf.community_name : "-- header encrypted --");
+    /* Column widths chosen to line up with the SUPERNODES/IPV6 ROUTES tables
+     * below -- all three now start their MAC column at the same offset (see
+     * those tables' comments). Header built from the same format string as
+     * the data rows, not hand-typed, so it can't drift out of alignment. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        " ### | TAP                  | MAC               | EDGE                  | HINT            | LAST SEEN |     UPTIME\n");
+                        " ### | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                        "TAP", "MAC", "EDGE", "HINT", "LAST SEEN", "UPTIME");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "==================================================================================================================\n");
+                        "=========================================================================================================================\n");
 
     // dump nodes with forwarding through supernodes
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
@@ -602,7 +632,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                              * table has no real per-peer uptime concept) purely so the row's
                              * right edge reaches the same column as the shared header's
                              * "UPTIME" above, instead of ending short and ragged. */
-                            "%4u | %-20s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                            "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
                             ++num,
                             (peer->dev_addr.net_addr == 0) ? "" : inet_ntoa(*(struct in_addr *) &net),
                             (is_null_mac(peer->mac_addr)) ? "" : macaddr_str(mac_buf, peer->mac_addr),
@@ -618,7 +648,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
 
     // dump peer-to-peer nodes
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "------------------------------------------------------------------------------------------------------------------\n");
+                        "-------------------------------------------------------------------------------------------------------------------------\n");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "PEER TO PEER\n");
     num = 0;
@@ -628,7 +658,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                             /* see the matching comment in the SUPERNODE FORWARD block above */
-                            "%4u | %-20s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                            "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
                             ++num,
                             (peer->dev_addr.net_addr == 0) ? "" : inet_ntoa(*(struct in_addr *) &net),
                             (is_null_mac(peer->mac_addr)) ? "" : macaddr_str(mac_buf, peer->mac_addr),
@@ -648,7 +678,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     // selection criterion, not a peer description), so it gets its own header instead of
     // reusing the one printed at the very top.
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "------------------------------------------------------------------------------------------------------------------\n");
+                        "-------------------------------------------------------------------------------------------------------------------------\n");
 
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "SUPERNODES\n");
@@ -658,10 +688,10 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
      * added a matching numbered index to each data row below so the column
      * actually lines up, not just the header text. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        " ### | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %19s\n",
+                        " ### | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %-24s\n",
                         "SN VER", "L", "A", "MAC", "ADDRESS", "SELECTION", "SEEN", "STARTED (SN LOCAL TIME)");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "===============================================================================================================================\n");
+                        "=======================================================================================================================================\n");
     num = 0;
     HASH_ITER(hh, eee->conf.supernodes, peer, tmpPeer) {
         net = htonl(peer->dev_addr.net_addr);
@@ -684,7 +714,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
             strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&started));
         }
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            "%4u | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %19s\n",
+                            "%4u | %-24s %1s%1s | %-17s | %-21s | %-15s | %9s | %-24s\n",
                             ++num,
                             peer->version,
                             (peer->purgeable) ? "" : "l",
@@ -703,22 +733,23 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     // Stage A IPv6 support: a further table, appended below SUPERNODES, listing
     // eee->learned_routes -- the same data mgmt_routes() exposes over JSON (the
     // "routes" command), just also rendered here for the bare-<enter> plain-text
-    // console. There is no IPv6-specific supernode selection (that stays
-    // IPv4-only -- see the SN_SELECTION_STRATEGY_WEIGHT work), so SELECTION is
-    // always "N/A", kept only for column parity with the SUPERNODES table above.
+    // console. SUBNET width and MAC's column offset match the TAP and SUPERNODES
+    // tables above (see their comments) so all three line up. HINT is the
+    // advertising peer's own dev_desc, the same lookup mgmt_edges_row() already
+    // does for the TAP table -- "N/A" if that MAC isn't a currently-known peer
+    // (e.g. it only reached us relayed through a supernode we're not directly
+    // peered with). There's no IPv6-specific supernode selection (stays
+    // IPv4-only, see SN_SELECTION_STRATEGY_WEIGHT), so that column was dropped
+    // entirely rather than kept around always reading "N/A".
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "===============================================================================================================================\n");
+                        "=======================================================================================================================================\n");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "IPV6 ROUTES\n");
-    /* Same format string as the data rows below (with " ###" hand-added in place
-     * of "%4u", since a bare number can't be a literal header label) -- typing the
-     * header out by hand with manually-counted spaces was what misaligned it the
-     * first time; reusing the row format guarantees the columns actually agree. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        " ### | %-30s | %-17s | %-9s | %9s\n",
-                        "SUBNET", "MAC", "SELECTION", "LAST SEEN");
+                        " ### | %-27s | %-17s | %-15s | %9s\n",
+                        "SUBNET", "MAC", "HINT", "LAST SEEN");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "===============================================================================================================================\n");
+                        "====================================================================================\n");
     sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
            &req.sender_sock, req.sock_len);
     msg_len = 0;
@@ -727,17 +758,19 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         n2n_learned_route_t *route, *tmpRoute;
         ip6str_t subnet_buf;
         uint32_t num_routes = 0;
+        const char *hint;
 
         HASH_ITER(hh, eee->learned_routes, route, tmpRoute) {
             inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
             snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - route->last_seen));
+            hint = find_peer_desc_by_mac(eee, route->srcMac);
 
             msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                                "%4u | %-30s | %-17s | %-9s | %9s\n",
+                                "%4u | %-27s | %-17s | %-15s | %9s\n",
                                 ++num_routes,
                                 subnet_buf,
                                 macaddr_str(mac_buf, route->srcMac),
-                                "N/A",
+                                (hint && hint[0]) ? hint : "N/A",
                                 time_buf);
 
             sendto(eee->udp_mgmt_sock, udp_buf, msg_len, 0,
@@ -756,7 +789,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
 
     // further stats
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "===============================================================================================================================\n");
+                        "====================================================================================\n");
 
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "uptime %lu | ",
