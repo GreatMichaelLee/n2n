@@ -207,12 +207,38 @@ static void mgmt_edges (mgmt_req_t *req, strbuf_t *buf) {
  * of a bare MAC. NULL if that MAC isn't directly registered with THIS
  * supernode in that community (e.g. it only reached us relayed through a
  * federation peer -- see REMOTE EDGES below for that case). */
+/* sock_equal() (n2n.c) requires the port to match too, which is wrong for
+ * matching "this locally-registered edge's source address" against "that
+ * remote supernode's listening address": an edge's source port is its own
+ * randomized/local port, never the remote supernode's listening port (e.g.
+ * 10086), so a full sock_equal() here would essentially never match -- see
+ * the REMOTE EDGES title-hint lookup below, which needs address-only. */
+static int sock_addr_equal (const n2n_sock_t *a, const n2n_sock_t *b) {
+    if(a->family != b->family)
+        return 0;
+    switch(a->family) {
+        case AF_INET:
+            return (0 == memcmp(a->addr.v4, b->addr.v4, IPV4_SIZE));
+        default:
+            return (0 == memcmp(a->addr.v6, b->addr.v6, IPV6_SIZE));
+    }
+}
+
 static const char *find_edge_desc_by_mac (struct sn_community *community, const n2n_mac_t mac) {
     struct peer_info *peer, *tmpPeer;
+    node_supernode_association_t *assoc, *tmp_assoc;
 
     HASH_ITER(hh, community->edges, peer, tmpPeer) {
         if(memcmp(peer->mac_addr, mac, N2N_MAC_SIZE) == 0)
             return (const char *)peer->dev_desc;
+    }
+    /* not directly registered here -- fall back to comm->assoc (same source
+     * REMOTE EDGES uses), so an edge that only ever registered with a
+     * *different* federated supernode (e.g. HK's route advertisement, relayed
+     * here via try_forward()) still gets a real HINT instead of "N/A". */
+    HASH_ITER(hh, community->assoc, assoc, tmp_assoc) {
+        if((0 == memcmp(assoc->mac, mac, N2N_MAC_SIZE)) && assoc->dev_desc[0])
+            return (const char *)assoc->dev_desc;
     }
     return NULL;
 }
@@ -553,6 +579,8 @@ int process_mgmt (n2n_sn_t *sss,
     {
         node_supernode_association_t *assoc, *tmp_assoc;
         n2n_sock_str_t remote_sns[16];
+        n2n_sock_t remote_sn_socks[16]; /* address-only match against locally-registered
+                                          * edges below -- see sock_addr_equal()'s comment */
         int num_remote_sns = 0;
         int i;
         uint32_t num_remote_total = 0;
@@ -572,6 +600,7 @@ int process_mgmt (n2n_sn_t *sss,
                 }
                 if((i == num_remote_sns) && (num_remote_sns < 16)) {
                     strncpy(remote_sns[num_remote_sns], via_str, sizeof(n2n_sock_str_t));
+                    memcpy(&remote_sn_socks[num_remote_sns], &via_sn, sizeof(n2n_sock_t));
                     num_remote_sns++;
                 }
             }
@@ -600,10 +629,7 @@ int process_mgmt (n2n_sn_t *sss,
              * purposes) -- best-effort, not a guaranteed match. */
             HASH_ITER(hh, sss->communities, community, tmp) {
                 HASH_ITER(hh, community->edges, peer, tmpPeer) {
-                    n2n_sock_str_t peer_sock_str;
-
-                    sock_to_cstr(peer_sock_str, &(peer->sock));
-                    if((0 == strcmp(peer_sock_str, remote_sns[i])) && peer->dev_desc[0]) {
+                    if(sock_addr_equal(&(peer->sock), &remote_sn_socks[i]) && peer->dev_desc[0]) {
                         sn_hint = (const char *)peer->dev_desc;
                         break;
                     }
@@ -635,6 +661,10 @@ int process_mgmt (n2n_sn_t *sss,
                     sock_to_cstr(via_str, &via_sn);
                     if(0 != strcmp(via_str, remote_sns[i]))
                         continue;
+
+                    /* comm->assoc no longer contains edges that are also directly
+                     * registered here -- see update_node_supernode_association()'s
+                     * local_edge check, which is where this is actually prevented now. */
 
                     /* see the matching fix+comment for the local-edges table above */
                     snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - assoc->last_seen));

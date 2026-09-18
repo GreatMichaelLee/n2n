@@ -926,6 +926,27 @@ void update_node_supernode_association (struct sn_community *comm,
                                         time_t now, const n2n_desc_t *dev_desc, const n2n_ip_subnet_t *dev_addr) {
 
     node_supernode_association_t *assoc;
+    struct peer_info *local_edge;
+
+    /* A weight-mode edge registers with every configured supernode, not just
+     * its active one -- so a REGISTER_SUPER for a MAC that's ALSO directly
+     * registered here (comm->edges) doesn't mean "this MAC lives on another
+     * supernode", it means this specific edge just happens to be multi-homed.
+     * Recording it in comm->assoc anyway made it show up as both a local AND
+     * a "remote" edge in the mgmt console (REMOTE EDGES duplicating the local
+     * edges table) -- fix that at the source instead of filtering it out at
+     * display time: comm->assoc should only ever describe edges that are
+     * genuinely NOT registered here directly. Drop any stale assoc entry too,
+     * for the edge that used to be remote-only and only just became local. */
+    HASH_FIND_PEER(comm->edges, *edgeMac, local_edge);
+    if(local_edge != NULL) {
+        HASH_FIND(hh, comm->assoc, edgeMac, sizeof(n2n_mac_t), assoc);
+        if(assoc) {
+            HASH_DEL(comm->assoc, assoc);
+            free(assoc);
+        }
+        return;
+    }
 
     HASH_FIND(hh, comm->assoc, edgeMac, sizeof(n2n_mac_t), assoc);
     if(!assoc) {

@@ -614,7 +614,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
      * those tables' comments). Header built from the same format string as
      * the data rows, not hand-typed, so it can't drift out of alignment. */
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        " ### | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                        " ### | %-27s | %-17s | %-21s | %-15s | %9s | %-24s\n",
                         "TAP", "MAC", "EDGE", "HINT", "LAST SEEN", "UPTIME");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "=========================================================================================================================\n");
@@ -638,7 +638,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         if(peer->sn_start_time)
             strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&peer->sn_start_time));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                            "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %-24s\n",
                             ++num,
                             (peer->dev_addr.net_addr == 0) ? "" : inet_ntoa(*(struct in_addr *) &net),
                             (is_null_mac(peer->mac_addr)) ? "" : macaddr_str(mac_buf, peer->mac_addr),
@@ -666,7 +666,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
         if(peer->sn_start_time)
             strftime(uptime_buf, sizeof(uptime_buf), "%Y/%m/%d %H:%M:%S", localtime(&peer->sn_start_time));
         msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                            "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %10s\n",
+                            "%4u | %-27s | %-17s | %-21s | %-15s | %9s | %-24s\n",
                             ++num,
                             (peer->dev_addr.net_addr == 0) ? "" : inet_ntoa(*(struct in_addr *) &net),
                             (is_null_mac(peer->mac_addr)) ? "" : macaddr_str(mac_buf, peer->mac_addr),
