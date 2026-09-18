@@ -675,6 +675,25 @@ static void register_with_new_peer (n2n_edge_t *eee,
 
     HASH_FIND_PEER(eee->pending_peers, mac, scan);
 
+    /* If this MAC is already pending but the address we're being told to use has
+     * changed, its first hole-punch attempt (made when the entry was created)
+     * used whatever address was current back then -- if that one was stale or
+     * simply wrong (confirmed live: a supernode hint broadcast can relay a bad
+     * address for an edge that's also the supernode's own host), the peer is
+     * stuck in pending_peers forever: the branch below only ever silently
+     * updated scan->sock, never actually retried send_register(), so a MAC
+     * whose first attempt failed had no way to ever get promoted to
+     * known_peers. This directly implements what this function's own doc
+     * comment above already promises ("more aggressive registration...even if
+     * the MAC is in pending_peers") but the code never did: drop the stale
+     * entry and fall through to the exact same creation+hole-punch path below,
+     * this time with the address we just learned is different. */
+    if((scan != NULL) && !sock_equal(&(scan->sock), peer)) {
+        HASH_DEL(eee->pending_peers, scan);
+        free(scan);
+        scan = NULL;
+    }
+
     /* NOTE: pending_peers are purged periodically with purge_expired_nodes */
     if(scan == NULL) {
         scan = calloc(1, sizeof(struct peer_info));
