@@ -496,7 +496,14 @@ int process_mgmt (n2n_sn_t *sss,
 
         num = 0;
         HASH_ITER(hh, community->edges, peer, tmpPeer) {
-            sprintf(time_buf, "%8us", (unsigned int)(now - peer->last_seen));
+            /* was a bare sprintf() -- last_seen==0 (a peer just created by REGISTER_SUPER/
+             * federation relay, not yet updated) makes (now - 0) == now, which as an absolute
+             * unix timestamp is already 10 digits, one past what this 10-byte buffer ("9
+             * digits + 1 terminating zero") assumes. glibc's _FORTIFY_SOURCE catches the
+             * overflow and aborts -- confirmed live via gdb on a production supernode. The
+             * result is discarded below when last_seen is 0, but that guard is on display,
+             * not on this write, so it never protected against the overflow itself. */
+            snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - peer->last_seen));
             ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
                                 "%4u | %-19s | %-17s | %-21s %-3s | %-15s | %9s\n",
                                 ++num,
@@ -629,7 +636,8 @@ int process_mgmt (n2n_sn_t *sss,
                     if(0 != strcmp(via_str, remote_sns[i]))
                         continue;
 
-                    sprintf(time_buf, "%8us", (unsigned int)(now - assoc->last_seen));
+                    /* see the matching fix+comment for the local-edges table above */
+                    snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - assoc->last_seen));
                     hint = (const char *)assoc->dev_desc;
 
                     ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
@@ -686,7 +694,8 @@ int process_mgmt (n2n_sn_t *sss,
         HASH_ITER(hh, sss->communities, community, tmp) {
             HASH_ITER(hh, community->routes, route, tmpRoute) {
                 inet_ntop(AF_INET6, route->subnet.net_addr, subnet_buf, sizeof(subnet_buf));
-                sprintf(time_buf, "%8us", (unsigned int)(now - route->last_seen));
+                /* see the matching fix+comment for the local-edges table above */
+                snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - route->last_seen));
                 hint = find_edge_desc_by_mac(community, route->srcMac);
 
                 ressize += snprintf(resbuf + ressize, N2N_SN_PKTBUF_SIZE - ressize,
