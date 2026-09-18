@@ -617,7 +617,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
                         " ### | %-27s | %-17s | %-21s | %-15s | %9s | %-24s\n",
                         "TAP", "MAC", "EDGE", "HINT", "LAST SEEN", "UPTIME");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "=========================================================================================================================\n");
+                        "=========================================================================================================================================\n");
 
     // dump nodes with forwarding through supernodes
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
@@ -654,7 +654,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
 
     // dump peer-to-peer nodes
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "-------------------------------------------------------------------------------------------------------------------------\n");
+                        "-----------------------------------------------------------------------------------------------------------------------------------------\n");
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "PEER TO PEER\n");
     num = 0;
@@ -686,7 +686,7 @@ void readFromMgmtSocket (n2n_edge_t *eee) {
     // selection criterion, not a peer description), so it gets its own header instead of
     // reusing the one printed at the very top.
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
-                        "-------------------------------------------------------------------------------------------------------------------------\n");
+                        "-----------------------------------------------------------------------------------------------------------------------------------------\n");
 
     msg_len += snprintf((char *) (udp_buf + msg_len), (N2N_PKT_BUF_SIZE - msg_len),
                         "SUPERNODES\n");
