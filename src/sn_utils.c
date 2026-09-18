@@ -926,28 +926,25 @@ void update_node_supernode_association (struct sn_community *comm,
                                         time_t now, const n2n_desc_t *dev_desc, const n2n_ip_subnet_t *dev_addr) {
 
     node_supernode_association_t *assoc;
-    struct peer_info *local_edge;
 
-    /* A weight-mode edge registers with every configured supernode, not just
-     * its active one -- so a REGISTER_SUPER for a MAC that's ALSO directly
-     * registered here (comm->edges) doesn't mean "this MAC lives on another
-     * supernode", it means this specific edge just happens to be multi-homed.
-     * Recording it in comm->assoc anyway made it show up as both a local AND
-     * a "remote" edge in the mgmt console (REMOTE EDGES duplicating the local
-     * edges table) -- fix that at the source instead of filtering it out at
-     * display time: comm->assoc should only ever describe edges that are
-     * genuinely NOT registered here directly. Drop any stale assoc entry too,
-     * for the edge that used to be remote-only and only just became local. */
-    HASH_FIND_PEER(comm->edges, *edgeMac, local_edge);
-    if(local_edge != NULL) {
-        HASH_FIND(hh, comm->assoc, edgeMac, sizeof(n2n_mac_t), assoc);
-        if(assoc) {
-            HASH_DEL(comm->assoc, assoc);
-            free(assoc);
-        }
-        return;
-    }
-
+    /* NOTE (2026-09-18): a source-side "don't record this MAC in comm->assoc
+     * if it's also directly registered here" check briefly lived here, to
+     * stop a weight-mode multi-homed edge from showing up as both local AND
+     * "remote" in the mgmt console. Reverted -- comm->assoc's job is "which
+     * federation supernode did we most recently learn this MAC through",
+     * and that's independently useful to the cross-supernode try_forward()
+     * relay (COMMUNITY_ROUTE_ADV, edge hints) regardless of whether the MAC
+     * *also* happens to be locally registered right now. Deleting it here
+     * caused a real gap: an edge whose weight-mode selection flaps between
+     * supernodes (confirmed live: NS bouncing 13ms/64ms between TX and VMS)
+     * would have its VMS-side assoc entry wiped the moment it briefly
+     * registered there directly, then have no assoc entry again once it
+     * flapped back to TX -- until TX's next periodic REGISTER_SUPER happened
+     * to relay it again. During that window, anything VMS tried to
+     * try_forward() to that MAC (e.g. another edge's route advertisement)
+     * silently never reached it. The "don't show it twice" need belongs in
+     * the REMOTE EDGES display code (it already checks community->edges
+     * there), not in this data source. */
     HASH_FIND(hh, comm->assoc, edgeMac, sizeof(n2n_mac_t), assoc);
     if(!assoc) {
         // create a new association

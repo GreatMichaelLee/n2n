@@ -619,6 +619,34 @@ int process_mgmt (n2n_sn_t *sss,
             uint32_t num_this_sn = 0;
             const char *hint;
             const char *sn_hint = NULL;
+            int any_left = 0;
+
+            /* Pre-scan: if every assoc entry for this remote supernode turns out to
+             * be a weight-mode edge that's also directly registered here (see the
+             * local_dup skip below), there's nothing left to show for this group at
+             * all -- skip the whole title/header instead of printing an empty
+             * table, which would otherwise look like a real (empty) result. */
+            HASH_ITER(hh, sss->communities, community, tmp) {
+                HASH_ITER(hh, community->assoc, assoc, tmp_assoc) {
+                    n2n_sock_t via_sn;
+                    n2n_sock_str_t via_str;
+                    struct peer_info *local_dup;
+
+                    fill_n2nsock(&via_sn, &(assoc->sock));
+                    sock_to_cstr(via_str, &via_sn);
+                    if(0 != strcmp(via_str, remote_sns[i]))
+                        continue;
+                    HASH_FIND_PEER(community->edges, assoc->mac, local_dup);
+                    if(local_dup != NULL)
+                        continue;
+                    any_left = 1;
+                    break;
+                }
+                if(any_left)
+                    break;
+            }
+            if(!any_left)
+                continue;
 
             /* Supernode-to-supernode REGISTER_SUPER never carries a dev_desc at all
              * (re_register_and_purge_supernodes() leaves it zeroed -- there's no
@@ -656,15 +684,27 @@ int process_mgmt (n2n_sn_t *sss,
                 HASH_ITER(hh, community->assoc, assoc, tmp_assoc) {
                     n2n_sock_t via_sn;
                     n2n_sock_str_t via_str;
+                    struct peer_info *local_dup;
 
                     fill_n2nsock(&via_sn, &(assoc->sock));
                     sock_to_cstr(via_str, &via_sn);
                     if(0 != strcmp(via_str, remote_sns[i]))
                         continue;
 
-                    /* comm->assoc no longer contains edges that are also directly
-                     * registered here -- see update_node_supernode_association()'s
-                     * local_edge check, which is where this is actually prevented now. */
+                    /* A weight-mode edge registers with every configured supernode,
+                     * not just its active one, so it can genuinely be BOTH a local
+                     * edge (comm->edges) and, simultaneously, present in comm->assoc
+                     * (learned via federation relay too) -- comm->assoc deliberately
+                     * keeps that entry regardless (see update_node_supernode_
+                     * association()'s comment: the cross-supernode try_forward()
+                     * relay needs it to stay put even while the MAC is also locally
+                     * registered, or a flapping weight-mode edge loses it during the
+                     * gap). This is purely a display-time dedup: don't print it a
+                     * second time here since the local edges table above already
+                     * shows it. */
+                    HASH_FIND_PEER(community->edges, assoc->mac, local_dup);
+                    if(local_dup != NULL)
+                        continue;
 
                     /* see the matching fix+comment for the local-edges table above */
                     snprintf(time_buf, sizeof(time_buf), "%8us", (unsigned int)(now - assoc->last_seen));
