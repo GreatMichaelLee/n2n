@@ -672,6 +672,9 @@ static void register_with_new_peer (n2n_edge_t *eee,
     struct peer_info *scan;
     macstr_t mac_buf;
     n2n_sock_str_t sockbuf;
+    n2n_ip_subnet_t old_dev_addr;
+    n2n_desc_t old_dev_desc;
+    uint8_t have_old_data = 0;
 
     HASH_FIND_PEER(eee->pending_peers, mac, scan);
 
@@ -689,6 +692,18 @@ static void register_with_new_peer (n2n_edge_t *eee,
      * entry and fall through to the exact same creation+hole-punch path below,
      * this time with the address we just learned is different. */
     if((scan != NULL) && !sock_equal(&(scan->sock), peer)) {
+        /* Confirmed live: without this, a MAC whose relayed address keeps
+         * flapping (the underlying cause is still being tracked down, see
+         * n2n-ns-route-adv-blackhole-unsolved) had its TAP/HINT columns blink
+         * blank on every single flap, because the fresh calloc() below starts
+         * zeroed and this call's own dev_addr/dev_desc args are NULL far more
+         * often than not (only a REGISTER carries them, not a PACKET -- see
+         * check_peer_registration_needed()'s callers). Preserve what we
+         * already knew, exactly like check_known_peer_sock_change() already
+         * does for known_peers for the identical reason. */
+        old_dev_addr = scan->dev_addr;
+        memcpy(old_dev_desc, scan->dev_desc, N2N_DESC_SIZE);
+        have_old_data = 1;
         HASH_DEL(eee->pending_peers, scan);
         free(scan);
         scan = NULL;
@@ -759,8 +774,14 @@ static void register_with_new_peer (n2n_edge_t *eee,
     scan->last_seen = time(NULL);
     if(dev_addr != NULL) {
         memcpy(&(scan->dev_addr), dev_addr, sizeof(n2n_ip_subnet_t));
+    } else if(have_old_data) {
+        scan->dev_addr = old_dev_addr;
     }
-    if(dev_desc) memcpy(scan->dev_desc, dev_desc, N2N_DESC_SIZE);
+    if(dev_desc) {
+        memcpy(scan->dev_desc, dev_desc, N2N_DESC_SIZE);
+    } else if(have_old_data) {
+        memcpy(scan->dev_desc, old_dev_desc, N2N_DESC_SIZE);
+    }
 }
 
 
@@ -1048,7 +1069,23 @@ static void check_known_peer_sock_change (n2n_edge_t *eee,
                                    dev_desc ? dev_desc : &old_dev_desc,
                                    peer);
         } else {
-            /* Don't worry about what the supernode reports, it could be seeing a different socket. */
+            /* Don't worry about what the supernode reports, it could be seeing a
+             * different socket -- so scan->sock is deliberately left untouched.
+             * But dev_addr/dev_desc are independent of which socket the hint rode
+             * in on, and dropping them here silently starves any edge that never
+             * completes P2P (permanently from_supernode, e.g. a TCP-only edge):
+             * every hint whose relay socket differs from whatever we last stored
+             * -- which flips every time that edge's weight-selection switches
+             * supernodes -- hit this branch and threw the payload away, so
+             * TAP/HINT stayed blank forever instead of just until the next hint.
+             * Confirmed live: LH/NS showing blank IP/HINT for HK specifically,
+             * the one edge in this deployment that is TCP-only and never
+             * achieves P2P, while P2P-capable peers were unaffected because they
+             * mostly take the !from_supernode branch above once connected. */
+            if(dev_addr != NULL)
+                memcpy(&(scan->dev_addr), dev_addr, sizeof(n2n_ip_subnet_t));
+            if(dev_desc != NULL)
+                memcpy(scan->dev_desc, dev_desc, N2N_DESC_SIZE);
         }
     } else {
         /* Socket unchanged -- still apply any freshly-arrived dev_addr/dev_desc
